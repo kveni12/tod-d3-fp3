@@ -48,6 +48,14 @@
 	const LINE_SELECTED = '#b91c1c';
 	/** Minimal-development dots: muted tone between green/orange ramp. */
 	const GREY_MINIMAL = '#a8908c';
+	const TOD_COLOR_BINS = [0.2, 0.4, 0.6, 0.8];
+	const TOD_COLOR_STEPS = [
+		MBTA_GREEN,
+		d3.interpolateRgb(MBTA_GREEN, MBTA_CHART_NEUTRAL)(0.55),
+		MBTA_CHART_NEUTRAL,
+		d3.interpolateRgb(MBTA_CHART_NEUTRAL, MBTA_ORANGE)(0.55),
+		MBTA_ORANGE
+	];
 
 	const plotKey = $derived(
 		JSON.stringify({
@@ -77,29 +85,19 @@
 	);
 
 	let lastPlotKey = $state('');
-	const plotUid = `ti-${Math.random().toString(36).slice(2, 9)}`;
-
 	/**
-	 * Diverging MBTA green–white–orange by TOD fraction; neutral at ``cut``.
+	 * Discretized MBTA green–neutral–orange TOD share encoding.
 	 *
 	 * @param {number | null} todFraction
-	 * @param {number} cut
 	 * @returns {string}
 	 */
-	function colorDivergingTod(todFraction, cut) {
+	function colorDiscretizedTod(todFraction) {
 		const tf = Number(todFraction);
 		if (!Number.isFinite(tf)) return GREY_MINIMAL;
-		const c = Math.min(1, Math.max(0, cut));
-		const t = Math.min(1, Math.max(0, tf));
-		if (c <= 1e-9) {
-			return d3.interpolateRgb(MBTA_GREEN, MBTA_ORANGE)(t);
-		}
-		if (t <= c) {
-			const u = c < 1e-9 ? 0 : t / c;
-			return d3.interpolateRgb(MBTA_GREEN, MBTA_CHART_NEUTRAL)(u);
-		}
-		const u = 1 - c < 1e-9 ? 1 : (t - c) / (1 - c);
-		return d3.interpolateRgb(MBTA_CHART_NEUTRAL, MBTA_ORANGE)(u);
+		return d3
+			.scaleThreshold()
+			.domain(TOD_COLOR_BINS)
+			.range(TOD_COLOR_STEPS)(Math.min(1, Math.max(0, tf)));
 	}
 
 	$effect(() => {
@@ -261,19 +259,6 @@
 			.attr('height', 'auto')
 			.attr('preserveAspectRatio', 'xMidYMid meet')
 			.style('display', 'block');
-
-		const gradId = `tod-share-grad-${plotUid}`;
-		const defs = svg.append('defs');
-		const lg = defs
-			.append('linearGradient')
-			.attr('id', gradId)
-			.attr('x1', '0%')
-			.attr('y1', '100%')
-			.attr('x2', '0%')
-			.attr('y2', '0%');
-		lg.append('stop').attr('offset', '0%').attr('stop-color', MBTA_GREEN);
-		lg.append('stop').attr('offset', `${Math.min(100, Math.max(0, cut * 100))}%`).attr('stop-color', MBTA_CHART_NEUTRAL);
-		lg.append('stop').attr('offset', '100%').attr('stop-color', MBTA_ORANGE);
 
 		const plotTitle = svg
 			.append('text')
@@ -528,7 +513,7 @@
 						}
 					];
 					if (d.todFraction != null && Number.isFinite(d.todFraction)) {
-						lines.push({ bold: false, text: `TOD fraction: ${fmt(d.todFraction)}` });
+						lines.push({ bold: false, text: `TOD share: ${d3.format('.0%')(d.todFraction)}` });
 					}
 					tooltip = { visible: true, x: event.clientX, y: event.clientY, lines };
 				})
@@ -570,7 +555,7 @@
 			.attr('cx', (d) => xScale(d.x))
 			.attr('cy', (d) => yScale(d.y))
 			.attr('r', (d) => d.dotR ?? 4)
-			.attr('fill', (d) => colorDivergingTod(d.todFraction, cut))
+			.attr('fill', (d) => colorDiscretizedTod(d.todFraction))
 			.attr('opacity', 0.88)
 			.attr('stroke', (d) => (selectedSet.has(d.tract.gisjoin) ? LINE_SELECTED : '#475569'))
 			.attr('stroke-width', (d) => (selectedSet.has(d.tract.gisjoin) ? 2 : 0.5))
@@ -664,7 +649,6 @@
 			}
 		}
 
-		const cbW = 11;
 		const cbG = svg
 			.append('g')
 			.attr('class', 'tod-intensity-colorbar')
@@ -678,40 +662,39 @@
 			.attr('fill', 'var(--text-muted)')
 			.attr('font-size', '8px')
 			.attr('font-weight', '600')
-			.text('TOD share (colour)');
+			.text('TOD share (bins)');
 
-		cbG
-			.append('rect')
-			.attr('x', 0)
-			.attr('y', 0)
-			.attr('width', cbW)
-			.attr('height', innerHeight)
-			.attr('rx', 2)
-			.attr('fill', `url(#${gradId})`)
-			.attr('stroke', 'var(--border)')
-			.attr('stroke-width', 0.5);
-
-		const fracAxis = d3.scaleLinear().domain([0, 1]).range([innerHeight, 0]);
-		cbG
-			.append('g')
-			.attr('transform', `translate(${cbW + 4}, 0)`)
-			.call(
-				d3
-					.axisRight(fracAxis)
-					.ticks(5)
-					.tickFormat(d3.format('.0%'))
-			)
-			.call((g) => g.selectAll('path,line').attr('stroke', 'var(--border)'))
-			.call((g) => g.selectAll('text').attr('fill', 'var(--text-muted)').attr('font-size', '8px'));
+		const swatchH = innerHeight / TOD_COLOR_STEPS.length;
+		const swatchW = 11;
+		const todLabels = ['0-20%', '20-40%', '40-60%', '60-80%', '80-100%'];
+		TOD_COLOR_STEPS.forEach((color, i) => {
+			const y0 = i * swatchH;
+			cbG
+				.append('rect')
+				.attr('x', 0)
+				.attr('y', y0)
+				.attr('width', swatchW)
+				.attr('height', swatchH)
+				.attr('fill', color)
+				.attr('stroke', 'var(--border)')
+				.attr('stroke-width', 0.35);
+			cbG
+				.append('text')
+				.attr('x', swatchW + 6)
+				.attr('y', y0 + swatchH / 2)
+				.attr('dy', '0.35em')
+				.attr('fill', 'var(--text-muted)')
+				.attr('font-size', '8px')
+				.text(todLabels[i]);
+		});
 
 		cbG
 			.append('text')
-			.attr('x', cbW + 42)
-			.attr('y', (1 - cut) * innerHeight)
-			.attr('dy', '0.35em')
+			.attr('x', 0)
+			.attr('y', innerHeight + 14)
 			.attr('fill', 'var(--accent)')
 			.attr('font-size', '7px')
-			.text(`cut ${(cut * 100).toFixed(0)}%`);
+			.text(`TOD cut: ${d3.format('.0%')(cut)}`);
 
 		/* Size + minimal-development legend: default = centered under plot; wide = stacked in the right column */
 		const wMid = (wMin + wMax) / 2;
