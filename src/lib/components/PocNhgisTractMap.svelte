@@ -28,7 +28,6 @@
 		MBTA_ORANGE,
 		MBTA_RED
 	} from '$lib/utils/mbtaColors.js';
-	import { renderMuniComposition, renderMuniRankedGrowth } from '$lib/utils/municipalCharts.js';
 
 	/**
 	 * Tract-dashboard–style map: census % housing-unit growth choropleth (period from panel), TOD-tier
@@ -46,14 +45,18 @@
 	 *     Optional MassBuilds rows for TOD / stock tooltips — use the same window as ``buildTractDevClassMap``
 	 *     (e.g. 1990–2026 on the main POC). When omitted, uses ``buildFilteredData`` (panel period only).
 	 */
-	let { panelState, tractList, nhgisRows, metricsDevelopments = null } = $props();
+	let { panelState, tractList, nhgisRows, metricsDevelopments = null, guidedMode = false } = $props();
 
 	let containerEl = $state(null);
+	let tooltipEl = $state(null);
 	let stepEls = $state([]);
+	let focusWaypointEls = $state([]);
 	let tooltip = $state({
 		visible: false,
 		x: 0,
 		y: 0,
+		anchorX: null,
+		anchorY: null,
 		eyebrow: '',
 		title: '',
 		badge: '',
@@ -65,12 +68,57 @@
 	let hoveredSpotlight = $state(/** @type {'tod_dominated' | 'nontod_dominated' | 'minimal' | null} */ (null));
 	let pinnedSpotlight = $state(/** @type {'tod_dominated' | 'nontod_dominated' | 'minimal' | null} */ (null));
 	let comparisonMetric = $state(/** @type {'hu_growth' | 'tod_share' | 'stock_increase'} */ ('hu_growth'));
-	/** When true, dim everything except currently visible mismatch tracts. */
-	let focusMismatchOnly = $state(false);
 	/** Optional: emphasize tracts with median household income below the lower-income threshold. */
 	let focusLowIncomeTracts = $state(false);
 	/** Hover-linked cluster highlight: all tracts in this category read as one pattern. */
 	let hoveredMismatchCluster = $state(/** @type {null | 'ha_lg' | 'hg_la'} */ (null));
+	let guidedLowerIncomeOverlay = $state(/** @type {'cohort' | 'mismatch'} */ ('cohort'));
+	let pinnedTooltipStage = $state(/** @type {number | null} */ (null));
+	let lastAutoFocusedStage = $state(/** @type {string | null} */ (null));
+	let guidedFocusDetail = $state(/** @type {string | null} */ (null));
+	let activeGuidedDevelopmentKey = $state(/** @type {string | null} */ (null));
+	const lowIncomeFocusOn = $derived(guidedMode ? revealStage === 10 : focusLowIncomeTracts);
+
+	const tooltipPosition = $derived.by(() => {
+		const offset = 12;
+		const margin = 8;
+		const fallbackWidth = 360;
+		const fallbackHeight = 260;
+		const width = tooltipEl?.offsetWidth ?? fallbackWidth;
+		const height = tooltipEl?.offsetHeight ?? fallbackHeight;
+		const rawLeft = tooltip.x + offset;
+		const rawTop = tooltip.y + offset;
+		if (typeof window === 'undefined') return { left: rawLeft, top: rawTop };
+		const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+		const maxTop = Math.max(margin, window.innerHeight - height - margin);
+		return {
+			left: Math.min(maxLeft, Math.max(margin, rawLeft)),
+			top: Math.min(maxTop, Math.max(margin, rawTop))
+		};
+	});
+
+	const tooltipArrow = $derived.by(() => {
+		if (tooltip.anchorX == null || tooltip.anchorY == null) return null;
+		const width = tooltipEl?.offsetWidth ?? 360;
+		const height = tooltipEl?.offsetHeight ?? 260;
+		const left = tooltipPosition.left;
+		const top = tooltipPosition.top;
+		const right = left + width;
+		const bottom = top + height;
+		const ax = tooltip.anchorX;
+		const ay = tooltip.anchorY;
+		const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+		if (ax < left) {
+			return { side: 'left', top: clamp(ay - top, 18, height - 18) };
+		}
+		if (ax > right) {
+			return { side: 'right', top: clamp(ay - top, 18, height - 18) };
+		}
+		if (ay < top) {
+			return { side: 'top', left: clamp(ax - left, 18, width - 18) };
+		}
+		return { side: 'bottom', left: clamp(ax - left, 18, width - 18) };
+	});
 
 	/** Nice unit ticks + pixel radii for HTML dot-size legend (same sqrt scale as map dots). */
 	let devSizeLegendTicks = $state(/** @type {{ units: number; rPx: number }[] | null} */ (null));
@@ -95,11 +143,9 @@
 	 * ~0.11 opacity ≈ 89% dimming vs full (≥50% reduction vs the previous 0.22 pass) so violet/lavender outlines read clearly.
 	 */
 	const NON_MISMATCH_DIM = 0.11;
-	/** When “Show mismatch areas only”: hide context almost entirely. */
-	const NON_MISMATCH_FOCUS_ONLY = 0.06;
 	const FILL_DESAT = '#a8a29e';
-	/** When “lower-income tracts” focus is on: hide choropleth for tracts at/above $125k median (not a dimmed blue). */
-	const LOW_INCOME_FOCUS_INACTIVE_FILL = '#e2e8f0';
+	/** When “lower-income tracts” focus is on: use neutral tan for tracts at/above $125k median. */
+	const LOW_INCOME_FOCUS_INACTIVE_FILL = '#e7e0d5';
 	const HIGH_ACCESS_LOW_GROWTH = 'high_access_low_growth';
 	const HIGH_GROWTH_LOW_ACCESS = 'high_growth_low_access';
 
@@ -109,6 +155,29 @@
 		if (dc === 'nontod_dominated') return 'var(--warning, #ea580c)';
 		if (dc === 'minimal') return MINIMAL_TRACT_STROKE;
 		return 'rgba(60,64,67,0.22)';
+	}
+
+	function showCohortOutlines() {
+		if (guidedMode) return (revealStage >= 4 && revealStage <= 7) || (revealStage === 10 && guidedLowerIncomeOverlay === 'cohort');
+		return revealStage === 1 || revealStage === 3;
+	}
+
+	function showMismatchOutlines() {
+		if (guidedMode) return revealStage === 3 || (revealStage === 10 && guidedLowerIncomeOverlay === 'mismatch');
+		return revealStage === 2;
+	}
+
+	function showDevelopmentDots() {
+		if (guidedMode) return revealStage >= 8 && revealStage <= 9;
+		return revealStage === 3;
+	}
+
+	function visibleCohortStroke(row) {
+		const dc = row?.devClass;
+		if (!showCohortOutlines()) return 'rgba(60,64,67,0.18)';
+		if (dc === 'tod_dominated') return 'var(--accent, #0d9488)';
+		if (dc === 'nontod_dominated') return 'var(--warning, #ea580c)';
+		return 'rgba(60,64,67,0.18)';
 	}
 
 	function cohortLabel(devClass) {
@@ -131,6 +200,17 @@
 		return '';
 	}
 
+	function developmentKey(d) {
+		if (!d) return null;
+		const name = String(d.name || d.project_name || '').trim();
+		const lon = Number(d.longitude ?? d.lon);
+		const lat = Number(d.latitude ?? d.lat);
+		const coordPart =
+			Number.isFinite(lon) && Number.isFinite(lat) ? `${lon.toFixed(5)},${lat.toFixed(5)}` : 'no-coords';
+		if (!name && coordPart === 'no-coords') return null;
+		return `${name || 'unnamed'}|${coordPart}`;
+	}
+
 	function isSpotlightMatch(row, spotlight) {
 		return !!spotlight && row?.devClass === spotlight;
 	}
@@ -141,16 +221,14 @@
 	}
 
 	function tintFill(baseFill, row) {
-		if (revealStage < 1) return baseFill;
+		if (!showCohortOutlines()) return baseFill;
 		const dc = row?.devClass;
-		if (!dc) return baseFill;
+		if (dc !== 'tod_dominated' && dc !== 'nontod_dominated') return baseFill;
 		const accent =
 			dc === 'tod_dominated'
 				? 'var(--accent, #0d9488)'
-				: dc === 'nontod_dominated'
-					? 'var(--warning, #ea580c)'
-					: MINIMAL_TRACT_STROKE;
-		return d3.interpolateRgb(baseFill, accent)(dc === 'minimal' ? 0.1 : 0.17);
+				: 'var(--warning, #ea580c)';
+		return d3.interpolateRgb(baseFill, accent)(0.17);
 	}
 
 	const mismatchClusters = $derived.by(() =>
@@ -162,11 +240,7 @@
 	const visibleMismatchIds = $derived.by(() => {
 		const s = new Set();
 		const c = mismatchClusters;
-		if (revealStage < 2) return s;
-		if (revealStage === 2) {
-			c.highAccessLowGrowth.forEach((id) => s.add(id));
-			return s;
-		}
+		if (!showMismatchOutlines()) return s;
 		c.highAccessLowGrowth.forEach((id) => s.add(id));
 		c.highGrowthLowAccess.forEach((id) => s.add(id));
 		return s;
@@ -212,55 +286,111 @@
 		return null;
 	}
 
-	const stepContent = [
-		{
-			kicker: 'Step 1',
-			title: 'Transit-rich places',
-			body: 'These areas are well-served by transit and are often considered ideal for dense housing. Read tract color as housing growth before adding outlines.'
-		},
-		{
-			kicker: 'Step 2',
-			title: 'Growth is not only “on the line”',
-			body: 'However, housing development is not concentrated only in these areas. Green, orange, and gray outlines show TOD-dominated, non-TOD-dominated, and minimal-development tracts.'
-		},
-		{
-			kicker: 'Step 3',
-			title: 'A measurable mismatch',
-			body: 'These highlighted tracts reveal a mismatch between transit access and housing growth (quartile-based). Solid purple begins with high access + low growth.'
-		},
-		{
-			kicker: 'Step 4',
-			title: 'Who can live near transit?',
-			body: 'In some high-access areas, limited development reduces opportunities for lower-income households (<$125k median) to live near transit. Dashed lavender adds high growth + low access; optional project dots layer on.'
-		}
-	];
-
-	const mapCallouts = $derived.by(() => {
-		if (revealStage === 0) {
-			return [
-				'Blue fill = stronger census housing growth in the selected period; red = weaker or negative growth.',
-				'Scroll to add tract-category outlines and then mismatch highlights—without changing the choropleth scale.'
-			];
-		}
-		if (revealStage === 1) {
-			return [
-				'Outlines encode MassBuilds-based cohorts; fill still shows census growth.',
-				'Next steps add access–growth “mismatch” tracts—use toggles to focus when the map gets busier.'
-			];
-		}
-		if (revealStage === 2) {
-			return [
-				'Solid violet tracts = high access + low growth. The map pushes everything else back (dimmer fill, lighter cohort outlines) so the mismatch layer stays in front.',
-				'If it still feels busy: turn on “Show mismatch areas only,” or hover any highlighted tract to spotlight its whole cluster.',
-				'Optional: “Show lower-income tracts” replaces growth color with neutral fill for tracts at/above the $125k median (no second choropleth).'
-			];
-		}
-		return [
-			'Dashed lavender = high growth + low access. Same hierarchy: background tracts fade; violet / lavender stay the focus.',
-			'Project dots (step 4) add site-level detail—tract fill and outlines still carry the regional story.',
-			'Income detail stays in tooltips and the charts below; hover or select a tract to link map → charts.'
+	const stepContent = guidedMode
+		? [
+			{
+				kicker: 'Step 1',
+				title: 'Where Transit Access Is Strongest',
+				bodyHtml:
+					'This map shows how transit access across Greater Boston is concentrated in a dense, radial network centered on the urban core. The Red, Orange, Blue, and Green lines cluster around Boston and Cambridge, while the commuter rail extends outward into surrounding suburbs, with services like the CapeFLYER reaching even farther.<br><br>Focus on where lines overlap most. Boston and Cambridge stand out, along with places like Quincy and Revere. These areas represent the strongest and most consistent transit access.<br><br>This sets up a simple question: does housing growth appear in these same places?'
+			},
+			{
+				kicker: 'Step 2',
+				title: 'Where Housing Growth Is Happening',
+				bodyHtml:
+					'This map adds housing growth. Darker blues show stronger growth, reds show weaker or negative growth. The Seaport stands out, but strong growth also appears farther out in parts of Plymouth, Essex, and Worcester counties.<br><br>Now compare this to the previous map. Some growth appears near strong transit, but much of it appears beyond those areas.<br><br>If transit-oriented development is working as intended, we might expect growth to be more concentrated near the strongest parts of the network. Instead, the pattern looks more spread out, raising questions about how growth and access are distributed.'
+			},
+			{
+				kicker: 'Step 3',
+				title: 'Looking at the Contrast Up Close',
+				bodyHtml:
+					'Here, we zoom into individual tracts to make the pattern easier to see.<br><br>Focus on a few examples. Some tracts show strong housing growth with only limited transit access nearby. Others sit closer to strong transit but show little or even negative growth.<br><br>Looking at these side by side makes the contrast clearer. Growth and transit access do not consistently appear together.'
+			},
+			{
+				kicker: 'Step 4',
+				title: 'A measurable mismatch',
+				bodyHtml:
+					'This step makes the pattern explicit. Solid purple outlines mark tracts with strong transit access but low or negative housing growth. Dashed purple outlines mark the opposite, where growth is strong despite weaker or minimal transit access.<br><br>Both patterns appear across the region. Some high-access areas show limited growth, while some lower-access areas show substantial growth.<br><br>This does not mean growth outside transit is inherently negative, but it highlights a clear difference between where access is strongest and where housing is being added.'
+			},
+			{
+				kicker: 'Step 5',
+				title: 'How Growth Is Distributed Relative to Transit',
+				bodyHtml:
+					'We now move from mismatch to classification. Tracts are grouped based on how development is distributed relative to transit. Green outlines mark more transit-oriented development, while orange outlines mark more non-TOD patterns.<br><br>The map still shows housing growth underneath, but now also shows whether that growth is concentrated near transit or not.<br><br>This makes it easier to compare not just where growth appears, but how it relates to transit access across the region.'
+			},
+			{
+				kicker: 'Step 6',
+				title: 'Boston and Cambridge',
+				bodyHtml:
+					'This zoom focuses on Boston and Cambridge as a reference case. Most tracts here are TOD-dominated, which aligns with strong transit access.<br><br>At the same time, the pattern is not uniform. There are areas with minimal development, and some tracts show low or even negative growth.<br><br>This shows that even in the most connected areas, housing growth is not consistently high.'
+			},
+			{
+				kicker: 'Step 7',
+				title: 'Quincy and Revere',
+				bodyHtml:
+					'Moving outward to Quincy and Revere, the pattern becomes more mixed. Transit access is still present, but nearby tracts do not all show the same relationship between growth and TOD.<br><br>There are slightly more non-TOD tracts, and there are also areas with minimal development or low growth.<br><br>This suggests that the relationship between transit and growth becomes less consistent outside the urban core.'
+			},
+			{
+				kicker: 'Step 8',
+				title: 'Outer-Ring Growth',
+				bodyHtml:
+					'In the outer ring, the pattern shifts more clearly. Many tracts are farther from strong transit, and much of the development appears in non-TOD categories.<br><br>Transit is still present in some places, but it is more limited and less frequent. Growth appears more dispersed and less closely associated with strong transit access.<br><br>This highlights a different pattern compared to the urban core.'
+			},
+			{
+				kicker: 'Step 9',
+				title: 'Projects Enter the Picture',
+				bodyHtml:
+					'This step adds individual developments. Each dot represents a project, with size reflecting units and color showing the share of multi-family housing from white to purple. Green outlines indicate transit-accessible projects, while yellow outlines indicate those that are not.<br><br>Most projects are overwhelmingly multi-family, with many near 100 percent. Larger projects appear more often near the core, but projects are distributed across the region.<br><br>Many projects, even in highly accessible areas, include little or no affordable housing, which limits who is able to access those units.'
+			},
+			{
+				kicker: 'Step 10',
+				title: 'Projects as Examples',
+				bodyHtml:
+					'This step highlights a few projects to make the pattern more concrete. Some, like Assembly Row and 16 Boardman St, represent strong TOD cases with dense housing near transit. Others, like 16 Dyer, are near transit but less tightly integrated.<br><br>On the other end, projects like Mahoney Farm and The Pinehills show substantial growth farther from strong transit access.<br><br>These examples make it easier to compare how location, scale, and affordability vary across developments.'
+			},
+			{
+				kicker: 'Step 11',
+				title: 'Who This Affects',
+				bodyHtml:
+					'In this final step, higher-income tracts fade into the background, where high income is defined as greater than $125k per year and lower income as less than $125k.<br><br>Many lower-income tracts appear within mismatch categories. Some are in high-access areas with limited growth, while others are in areas with growth but weaker transit access.<br><br>Among lower-income tracts, there also appear to be more areas with minimal development, even in places with transit access.<br><br>This shifts the focus from where housing is built to how access is distributed. Transit-oriented development is often associated with improved access, but without affordability, that access may not be equally available to all households.'
+			}
+		]
+		: [
+			{
+				kicker: 'Step 1',
+				title: 'Transit-rich places',
+				body: 'Start with tract fill only. This is the baseline view of housing growth before any extra layers appear.'
+			},
+			{
+				kicker: 'Step 2',
+				title: 'Growth is not only “on the line”',
+				body: 'Orange and green outlines mark tracts that lean more TOD-dominated or non-TOD-dominated, while the choropleth still carries the main story.'
+			},
+			{
+				kicker: 'Step 3',
+				title: 'A measurable mismatch',
+				body: 'Purple outlines take over here to show where transit access and housing growth pull apart, without the cohort outlines getting in the way.'
+			},
+			{
+				kicker: 'Step 4',
+				title: 'Bring projects back in',
+				body: 'The cohort outlines return with development dots on top, so you can compare tract patterns with the projects that sit inside them.'
+			}
 		];
-	});
+
+	const keyFindings = guidedMode
+		? [
+			'Transit access and housing growth are not aligned evenly across Greater Boston.',
+			'Some transit-rich tracts still show weak housing growth, while some faster-growing tracts sit farther from strong transit access.',
+			'The mismatch layer is the main takeaway: access and growth do not automatically arrive together.',
+			'Lower-income tracts make that mismatch more consequential because access to transit and access to housing are both at stake.'
+		]
+		: [
+			'Housing growth is uneven across the region, and the strongest growth does not simply track the transit network.',
+			'TOD-dominated and non-TOD-dominated tracts both show up across the map, so transit-oriented development is only one part of the bigger pattern.',
+			'Several transit-rich tracts still show relatively weak housing growth, which points to a clear access-growth mismatch.',
+			'Project dots in the final view make it easier to compare tract-level patterns with the developments located there.'
+		];
 
 	function stepRef(node, index) {
 		stepEls[index] = node;
@@ -269,6 +399,20 @@
 			destroy() {
 				stepEls[index] = null;
 				stepEls = [...stepEls];
+			}
+		};
+	}
+
+	function focusWaypointRef(node, meta) {
+		focusWaypointEls = [...focusWaypointEls.filter((item) => item.node !== node), { node, ...meta }];
+		return {
+			update(nextMeta) {
+				focusWaypointEls = focusWaypointEls.map((item) =>
+					item.node === node ? { node, ...nextMeta } : item
+				);
+			},
+			destroy() {
+				focusWaypointEls = focusWaypointEls.filter((item) => item.node !== node);
 			}
 		};
 	}
@@ -325,11 +469,8 @@
 	let mapViewBox = $state(/** @type {{ svgW: number; mapW: number; mapH: number }} */ ({
 		svgW: 520 + CHORO_LEGEND_COL_W,
 		mapW: 520,
-		mapH: 430
+		mapH: 470
 	}));
-	let chartResizeTick = $state(0);
-	let elComposition = $state(/** @type {HTMLElement | null} */ (null));
-	let elRanked = $state(/** @type {HTMLElement | null} */ (null));
 
 	let svgRef = $state(null);
 	let zoomBehaviorRef = $state(null);
@@ -350,55 +491,6 @@
 		})
 	);
 
-	const supplementalChartState = $derived.by(() => ({
-		yearStart: 1990,
-		yearEnd: 2026,
-		threshold: Number(panelState.transitDistanceMi ?? 0.5)
-	}));
-
-	const supplementalProjectRows = $derived.by(() => {
-		const radiusM = transitDistanceMiToMetres(panelState.transitDistanceMi ?? 0.5);
-		const source =
-			metricsDevelopments && metricsDevelopments.length
-				? metricsDevelopments
-				: buildFilteredData(developments, panelState);
-		return source
-			.map((d) => {
-				const year = Number(d?.year ?? d?.completion_year ?? d?.year_compl ?? d?.yrcomp_est);
-				const units = Number(d?.hu ?? d?.units);
-				const affordableUnits = Number(d?.affrd_unit ?? d?.affordableUnits);
-				const municipality = String(d?.municipal ?? d?.municipality ?? '').trim();
-				const prox = developmentMbtaProximity(d, mbtaStops, radiusM);
-				const distM = Number(prox?.nearestDistM);
-				return {
-					year,
-					units,
-					affordableUnits: Number.isFinite(affordableUnits) ? affordableUnits : 0,
-					municipality,
-					distance: Number.isFinite(distM) ? distM / 1609.344 : NaN,
-					hasDistance: Number.isFinite(distM)
-				};
-			})
-			.filter((d) => d.municipality && d.year >= 1990 && d.year <= 2026 && d.units > 0);
-	});
-
-	const supplementalMuniRows = $derived.by(() =>
-		d3
-			.rollups(
-				supplementalProjectRows,
-				(values) => {
-					const units = d3.sum(values, (d) => d.units);
-					const affordableUnits = d3.sum(values, (d) => d.affordableUnits);
-					return {
-						municipality: values[0].municipality,
-						units,
-						affordableShare: units > 0 ? affordableUnits / units : 0
-					};
-				},
-				(d) => d.municipality
-			)
-			.map(([, row]) => row)
-	);
 
 	const dataKey = $derived(
 		JSON.stringify({
@@ -478,6 +570,127 @@
 			.transition()
 			.duration(500)
 			.call(zoomBehaviorRef.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+	}
+
+	function tractScreenAnchor(gisjoin) {
+		if (!gisjoin || !projectionRef || !svgRef || !containerEl) return null;
+		const feature = (tractGeo?.features ?? []).find((f) => f.properties?.gisjoin === gisjoin);
+		if (!feature) return null;
+		const centroid = d3.geoPath(projectionRef).centroid(feature);
+		if (!Number.isFinite(centroid[0]) || !Number.isFinite(centroid[1])) return null;
+		const transform = d3.zoomTransform(svgRef.node());
+		const rect = containerEl.getBoundingClientRect();
+		return {
+			x: rect.left + transform.applyX(centroid[0]),
+			y: rect.top + transform.applyY(centroid[1])
+		};
+	}
+
+	function developmentScreenAnchor(d) {
+		if (!d || !projectionRef || !svgRef || !containerEl) return null;
+		const lon = Number(d.longitude ?? d.lon);
+		const lat = Number(d.latitude ?? d.lat);
+		if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+		const point = projectionRef([lon, lat]);
+		if (!point || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) return null;
+		const transform = d3.zoomTransform(svgRef.node());
+		const rect = containerEl.getBoundingClientRect();
+		return {
+			x: rect.left + transform.applyX(point[0]),
+			y: rect.top + transform.applyY(point[1])
+		};
+	}
+
+	function zoomToFeatureGroup(features, scaleCap = 9) {
+		if (!features?.length || !svgRef || !zoomBehaviorRef || !projectionRef) return;
+		const path = d3.geoPath(projectionRef);
+		let x0 = Infinity;
+		let y0 = Infinity;
+		let x1 = -Infinity;
+		let y1 = -Infinity;
+		for (const feature of features) {
+			const [[fx0, fy0], [fx1, fy1]] = path.bounds(feature);
+			if (!Number.isFinite(fx0) || !Number.isFinite(fy0) || !Number.isFinite(fx1) || !Number.isFinite(fy1)) continue;
+			x0 = Math.min(x0, fx0);
+			y0 = Math.min(y0, fy0);
+			x1 = Math.max(x1, fx1);
+			y1 = Math.max(y1, fy1);
+		}
+		const dx = x1 - x0;
+		const dy = y1 - y0;
+		if (!Number.isFinite(dx) || !Number.isFinite(dy) || dx <= 0 || dy <= 0) return;
+		const scale = Math.max(1, Math.min(scaleCap, 0.84 / Math.max(dx / mapW, dy / mapH)));
+		const tx = mapCanvasLeft + mapW / 2 - scale * (x0 + x1) / 2;
+		const ty = mapH / 2 - scale * (y0 + y1) / 2;
+		svgRef
+			.transition()
+			.duration(650)
+			.call(zoomBehaviorRef.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+	}
+
+	function zoomToDevelopment(d) {
+		if (!d || !svgRef || !zoomBehaviorRef || !projectionRef) return;
+		const lon = Number(d.longitude ?? d.lon);
+		const lat = Number(d.latitude ?? d.lat);
+		if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
+		const point = projectionRef([lon, lat]);
+		if (!point || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
+		const scale = 11.5;
+		const tx = mapCanvasLeft + mapW / 2 - scale * point[0];
+		const ty = mapH / 2 - scale * point[1];
+		svgRef
+			.transition()
+			.duration(600)
+			.call(zoomBehaviorRef.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+	}
+
+	function tractFeatureByGeoFilter(filterFn) {
+		return (tractGeo?.features ?? []).filter((f) => {
+			const gj = f.properties?.gisjoin;
+			const tract = tractList.find((t) => t.gisjoin === gj);
+			return tract ? filterFn(tract) : false;
+		});
+	}
+
+	function guidedRegionFeaturesForStage(stage) {
+		if (!guidedMode) return [];
+		if (stage === 5) {
+			return tractFeatureByGeoFilter((t) => {
+				const lat = Number(t.centlat);
+				const lon = Number(t.centlon);
+				return Number.isFinite(lat) && Number.isFinite(lon) && lat >= 42.30 && lat <= 42.43 && lon >= -71.17 && lon <= -70.98;
+			});
+		}
+		if (stage === 6) {
+			return tractFeatureByGeoFilter((t) => {
+				const lat = Number(t.centlat);
+				const lon = Number(t.centlon);
+				const isQuincy =
+					Number.isFinite(lat) && Number.isFinite(lon) && lat >= 42.22 && lat <= 42.31 && lon >= -71.07 && lon <= -70.96;
+				const isRevere =
+					Number.isFinite(lat) && Number.isFinite(lon) && lat >= 42.39 && lat <= 42.45 && lon >= -71.04 && lon <= -70.96;
+				return isQuincy || isRevere;
+			});
+		}
+		if (stage === 7 || stage === 9) {
+			const rowsByGj = new Map((nhgisRows ?? []).map((r) => [r.gisjoin, r]));
+			return tractFeatureByGeoFilter((t) => {
+				const lat = Number(t.centlat);
+				const lon = Number(t.centlon);
+				const row = rowsByGj.get(t.gisjoin);
+				const growth = Number(row?.census_hu_pct_change);
+				return Number.isFinite(lat) && Number.isFinite(lon) && Number.isFinite(growth) && lon <= -71.15 && lon >= -72.2 && lat >= 42.1 && lat <= 42.55 && growth >= (stage === 9 ? 10 : 15);
+			});
+		}
+		return [];
+	}
+
+	function guidedRegionIdsForStage(stage) {
+		return new Set(guidedRegionFeaturesForStage(stage).map((f) => f.properties?.gisjoin).filter(Boolean));
+	}
+
+	function guidedRegionOutlineFeaturesForStage(stage) {
+		return [];
 	}
 
 	function stopRadius(stop) {
@@ -697,6 +910,7 @@
 			.on('mousemove', handleMouseMove)
 			.on('mouseleave', handleOverlayLeave);
 
+		zoomLayer.append('g').attr('class', 'focus-region-layer');
 		zoomLayer.append('g').attr('class', 'dev-dots-layer');
 		zoomLayer.append('g').attr('class', 'insight-layer');
 
@@ -756,6 +970,7 @@
 			.scaleLinear()
 			.domain([-maxAbs, 0, maxAbs])
 			.range([MBTA_RED, MBTA_MAP_NEUTRAL, MBTA_BLUE]);
+		const guidedFocusIds = guidedRegionIdsForStage(revealStage);
 
 		d3.select(containerEl)
 			.selectAll('path.tract-poly')
@@ -766,12 +981,18 @@
 				const row = rowByGj.get(id);
 				const li = mismatchFlagsByGj.get(id)?.isLowIncome;
 				const isSelHover = id === panelState.hoveredTract || panelState.selectedTracts.has(id);
-				if (focusLowIncomeTracts && li !== true && !isSelHover) {
+				if (guidedMode && revealStage === 0) {
+					return isSelHover ? '#dbe7f6' : '#f2ede3';
+				}
+				if (lowIncomeFocusOn && li !== true && !isSelHover) {
 					return LOW_INCOME_FOCUS_INACTIVE_FILL;
 				}
 				const v = row ? Number(row.census_hu_pct_change) : NaN;
 				let baseFill = Number.isFinite(v) ? color(v) : '#e7e0d5';
 				let fill = tintFill(baseFill, row);
+				if (guidedMode && guidedFocusIds.size && !guidedFocusIds.has(id) && !isSelHover) {
+					fill = d3.interpolateRgb(fill, FILL_DESAT)(0.72);
+				}
 				if (mismatchLayerOn) {
 					if (!effectiveMismatchIds.has(id)) {
 						fill = d3.interpolateRgb(fill, FILL_DESAT)(0.65);
@@ -787,36 +1008,37 @@
 			.attr('stroke', (d) => {
 				const id = d.properties?.gisjoin;
 				const row = rowByGj.get(id);
-				if (effectiveMismatchIds.has(id)) {
+				if (showMismatchOutlines() && effectiveMismatchIds.has(id)) {
 					return mismatchKind(id) === 'ha_lg' ? MISMATCH_STROKE_HA : MISMATCH_STROKE_HG;
 				}
-				if (revealStage < 1) return 'rgba(60,64,67,0.18)';
-				return devClassStroke(row);
+				return visibleCohortStroke(row);
 			})
 			.attr('stroke-dasharray', (d) => {
 				const id = d.properties?.gisjoin;
-				if (!effectiveMismatchIds.has(id)) return 'none';
+				if (!showMismatchOutlines() || !effectiveMismatchIds.has(id)) return 'none';
 				return mismatchKind(id) === 'hg_la' ? '6 5' : 'none';
 			})
 			.attr('stroke-width', (d) => {
 				const id = d.properties?.gisjoin;
 				const row = rowByGj.get(id);
 				const dc = row?.devClass;
-				if (effectiveMismatchIds.has(id)) {
+				if (showMismatchOutlines() && effectiveMismatchIds.has(id)) {
 					return mismatchKind(id) === 'ha_lg' ? MISMATCH_W_HA : MISMATCH_W_HG;
 				}
-				if (revealStage < 1) return 0.45;
-				if (!dc) return 0.5;
-				if (isSpotlightMatch(row, spotlight)) return dc === 'minimal' ? 1.8 : 3.2;
-				return dc === 'tod_dominated' ? 2.8 : dc === 'minimal' ? 1.1 : 2.1;
+				if (guidedMode && revealStage === 0) return 0.35;
+				if (!showCohortOutlines()) return 0.45;
+				if (dc !== 'tod_dominated' && dc !== 'nontod_dominated') return 0.45;
+				if (isSpotlightMatch(row, spotlight)) return 3.2;
+				return dc === 'tod_dominated' ? 2.8 : 2.1;
 			})
 			.attr('stroke-opacity', (d) => {
 				const id = d.properties?.gisjoin;
-				if (effectiveMismatchIds.has(id)) return MISMATCH_STROKE_OPACITY;
+				if (showMismatchOutlines() && effectiveMismatchIds.has(id)) return MISMATCH_STROKE_OPACITY;
+				if (guidedMode && guidedFocusIds.size && !guidedFocusIds.has(id)) return 0.18;
 				if (mismatchLayerOn) {
 					const row = rowByGj.get(id);
 					const dc = row?.devClass;
-					if (dc === 'tod_dominated' || dc === 'nontod_dominated' || dc === 'minimal') return 0.38;
+					if (dc === 'tod_dominated' || dc === 'nontod_dominated') return 0.38;
 				}
 				return 1;
 			})
@@ -824,6 +1046,9 @@
 				const id = d.properties?.gisjoin;
 				const row = rowByGj.get(id);
 				if (id === panelState.hoveredTract || panelState.selectedTracts.has(id)) return 1;
+				if (guidedMode && guidedFocusIds.size) {
+					return guidedFocusIds.has(id) ? 1 : 0.18;
+				}
 				if (spotlight && !isSpotlightMatch(row, spotlight)) return 0.2;
 				if (revealStage === 0) return 1;
 				if (!mismatchLayerOn) return 1;
@@ -834,7 +1059,6 @@
 					if (mk === hoveredMismatchCluster) return 1;
 					return 0.35;
 				}
-				if (focusMismatchOnly) return vis ? 1 : NON_MISMATCH_FOCUS_ONLY;
 				return vis ? 1 : NON_MISMATCH_DIM;
 			});
 
@@ -927,7 +1151,7 @@
 		const devLayer = d3.select(containerEl).select('.dev-dots-layer');
 		const t = d3.transition().duration(350);
 
-		if (revealStage < 3) {
+		if (!showDevelopmentDots()) {
 			devSizeLegendTicks = null;
 			devLayer
 				.selectAll('circle.dev-dot')
@@ -944,6 +1168,10 @@
 		const invK = 1 / currentK;
 
 		const transitM = transitDistanceMiToMetres(panelState.transitDistanceMi ?? 0.5);
+		const featuredDevelopmentKeys =
+			guidedMode && revealStage === 9 && guidedStepTenExamples?.length
+				? new Set((guidedStepTenExamples ?? []).map((item) => developmentKey(item?.dev)).filter(Boolean))
+				: null;
 		const huVals = filteredDevs.map((d) => Number(d.hu) || 0).filter((h) => h > 0);
 		const huMin = huVals.length ? d3.min(huVals) : 1;
 		const huMax = huVals.length ? d3.max(huVals) : 1;
@@ -953,7 +1181,7 @@
 
 		devSizeLegendTicks = filteredDevs.length ? computeDevSizeLegendTicks(lo, hi, rScale) : [];
 
-		const mfColor = d3.scaleSequential((t) => interpolateOrangeGreen(t)).domain([0, 1]).clamp(true);
+		const mfColor = d3.scaleLinear().domain([0, 1]).range(['#ffffff', '#7c3f98']).clamp(true);
 
 		const glyphData = filteredDevs.map((d) => {
 			const hu = Number(d.hu) || 0;
@@ -966,7 +1194,10 @@
 				mfShare: mf,
 				rBase,
 				strokeWBase: access ? 0.55 : 0.4,
-				transitAccessible: access
+				transitAccessible: access,
+				isFeatured: featuredDevelopmentKeys ? featuredDevelopmentKeys.has(developmentKey(d)) : false,
+				isActiveGuidedDevelopment:
+					activeGuidedDevelopmentKey != null && developmentKey(d) === activeGuidedDevelopmentKey
 			};
 		});
 
@@ -982,10 +1213,10 @@
 						.attr('cy', (d) => projection([d.lon, d.lat])?.[1] ?? -9999)
 						.attr('r', (d) => d.rBase * invK)
 						.attr('fill', (d) =>
-							d.mfShare == null || !Number.isFinite(d.mfShare) ? '#475569' : mfColor(d.mfShare)
+							d.mfShare == null || !Number.isFinite(d.mfShare) ? '#cbd5e1' : mfColor(d.mfShare)
 						)
-						.attr('fill-opacity', 0.78)
-						.attr('stroke', (d) => (d.transitAccessible ? '#ffffff' : 'rgba(15, 23, 42, 0.55)'))
+						.attr('fill-opacity', 0.92)
+						.attr('stroke', (d) => (d.transitAccessible ? MBTA_GREEN : MBTA_ORANGE))
 						.attr('stroke-width', (d) => d.strokeWBase * invK)
 						.attr('opacity', 0)
 						.style('cursor', 'pointer')
@@ -1004,21 +1235,72 @@
 			.attr('cy', (d) => projection([d.lon, d.lat])?.[1] ?? -9999)
 			.attr('r', (d) => d.rBase * invK)
 			.attr('fill', (d) =>
-				d.mfShare == null || !Number.isFinite(d.mfShare) ? '#475569' : mfColor(d.mfShare)
+				d.mfShare == null || !Number.isFinite(d.mfShare) ? '#cbd5e1' : mfColor(d.mfShare)
 			)
-			.attr('fill-opacity', 0.78)
-			.attr('stroke', (d) => (d.transitAccessible ? '#ffffff' : 'rgba(15, 23, 42, 0.55)'))
-			.attr('stroke-width', (d) => d.strokeWBase * invK)
-			.attr('opacity', 1)
+			.attr('fill-opacity', 0.92)
+			.attr('stroke', (d) => (d.transitAccessible ? MBTA_GREEN : MBTA_ORANGE))
+			.attr('stroke-width', (d) => ((d.strokeWBase + (d.isFeatured ? 0.18 : 0) + (d.isActiveGuidedDevelopment ? 0.55 : 0)) * invK))
+			.attr('r', (d) => (d.rBase * (d.isActiveGuidedDevelopment ? 1.22 : 1)) * invK)
+			.attr('opacity', (d) => {
+				if (!featuredDevelopmentKeys) return 1;
+				if (d.isActiveGuidedDevelopment) return 1;
+				return d.isFeatured ? 1 : 0.16;
+			})
 			.selection()
 			.style('pointer-events', 'auto');
+
+		devLayer.selectAll('circle.dev-dot').filter((d) => d.isFeatured).raise();
+		devLayer.selectAll('circle.dev-dot').filter((d) => d.isActiveGuidedDevelopment).raise();
+	}
+
+	function updateFocusRegion() {
+		if (!containerEl || !projectionRef) return;
+		const layer = d3.select(containerEl).select('.focus-region-layer');
+		const t = d3.transition().duration(250);
+		const focusFeatures = guidedRegionOutlineFeaturesForStage(revealStage);
+		if (!guidedMode || focusFeatures.length === 0) {
+			layer.selectAll('g.focus-region').transition(t).attr('opacity', 0).remove();
+			return;
+		}
+		const groups = layer
+			.selectAll('g.focus-region')
+			.data(focusFeatures, (d) => d.properties?.stage)
+			.join(
+				(enter) => {
+					const g = enter.append('g').attr('class', 'focus-region').attr('opacity', 0);
+					g.append('path').attr('class', 'focus-region__halo');
+					g.append('path').attr('class', 'focus-region__outline');
+					return g;
+				},
+				(update) => update,
+				(exit) => exit.transition(t).attr('opacity', 0).remove()
+			);
+		const path = d3.geoPath(projectionRef);
+		groups
+			.select('path.focus-region__halo')
+			.attr('d', path)
+			.attr('fill', 'none')
+			.attr('stroke', 'rgba(255, 253, 248, 0.98)')
+			.attr('stroke-width', 4)
+			.attr('stroke-linejoin', 'round')
+			.attr('vector-effect', 'non-scaling-stroke');
+		groups
+			.select('path.focus-region__outline')
+			.attr('d', path)
+			.attr('fill', 'none')
+			.attr('stroke', guidedMode && revealStage >= 7 ? MBTA_ORANGE : MBTA_GREEN)
+			.attr('stroke-width', 2.2)
+			.attr('stroke-linejoin', 'round')
+			.attr('stroke-dasharray', revealStage >= 7 ? '7 5' : 'none')
+			.attr('vector-effect', 'non-scaling-stroke');
+		groups.transition(t).attr('opacity', 1);
 	}
 
 	function updateInsightMarkers() {
 		if (!containerEl || !svgRef || !projectionRef) return;
 		const layer = d3.select(containerEl).select('.insight-layer');
 		const t = d3.transition().duration(250);
-		if (!mismatchLayerOn || effectiveMismatchIds.size === 0) {
+		if (!showMismatchOutlines() || !mismatchLayerOn || effectiveMismatchIds.size === 0) {
 			layer.selectAll('g.insight-marker').transition(t).attr('opacity', 0).remove();
 			return;
 		}
@@ -1044,12 +1326,14 @@
 					: null;
 			})
 			.filter(Boolean)
-			.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-			.slice(0, revealStage >= 3 ? 5 : 4);
+			.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+		const topHaLg = candidates.filter((d) => d.type === HIGH_ACCESS_LOW_GROWTH).slice(0, 2);
+		const topHgLa = candidates.filter((d) => d.type === HIGH_GROWTH_LOW_ACCESS).slice(0, 2);
+		const markerRows = [...topHaLg, ...topHgLa];
 
 		const markers = layer
 			.selectAll('g.insight-marker')
-			.data(candidates, (d) => d.id)
+			.data(markerRows, (d) => d.id)
 			.join(
 				(enter) => {
 					const g = enter
@@ -1125,17 +1409,16 @@
 				const id = d.properties?.gisjoin;
 				if (id === hoveredId) return '#ffffff';
 				if (selectedSet.has(id)) return 'var(--cat-a, #6366f1)';
-				if (effectiveMismatchIds.has(id)) {
+				if (showMismatchOutlines() && effectiveMismatchIds.has(id)) {
 					return mismatchKind(id) === 'ha_lg' ? MISMATCH_STROKE_HA : MISMATCH_STROKE_HG;
 				}
 				const row = rowByGj?.get(id);
-				if (revealStage < 1) return 'rgba(60,64,67,0.18)';
-				return devClassStroke(row);
+				return visibleCohortStroke(row);
 			})
 			.attr('stroke-dasharray', (d) => {
 				const id = d.properties?.gisjoin;
 				if (id === hoveredId || selectedSet.has(id)) return 'none';
-				if (!effectiveMismatchIds.has(id)) return 'none';
+				if (!showMismatchOutlines() || !effectiveMismatchIds.has(id)) return 'none';
 				return mismatchKind(id) === 'hg_la' ? '6 5' : 'none';
 			})
 			.attr('stroke-width', (d) => {
@@ -1144,22 +1427,22 @@
 				const dc = row?.devClass;
 				if (id === hoveredId) return dc === 'minimal' ? 2 : 3.6;
 				if (selectedSet.has(id)) return dc === 'minimal' ? 1.7 : 3;
-				if (effectiveMismatchIds.has(id)) {
+				if (showMismatchOutlines() && effectiveMismatchIds.has(id)) {
 					return mismatchKind(id) === 'ha_lg' ? MISMATCH_W_HA : MISMATCH_W_HG;
 				}
-				if (revealStage < 1) return 0.45;
-				if (!dc) return 0.5;
-				if (isSpotlightMatch(row, spotlight)) return dc === 'minimal' ? 1.8 : 3.2;
-				return dc === 'tod_dominated' ? 2.8 : dc === 'minimal' ? 1.1 : 2.1;
+				if (!showCohortOutlines()) return 0.45;
+				if (dc !== 'tod_dominated' && dc !== 'nontod_dominated') return 0.45;
+				if (isSpotlightMatch(row, spotlight)) return 3.2;
+				return dc === 'tod_dominated' ? 2.8 : 2.1;
 			})
 			.attr('stroke-opacity', (d) => {
 				const id = d.properties?.gisjoin;
 				if (id === hoveredId || selectedSet.has(id)) return 1;
-				if (effectiveMismatchIds.has(id)) return MISMATCH_STROKE_OPACITY;
+				if (showMismatchOutlines() && effectiveMismatchIds.has(id)) return MISMATCH_STROKE_OPACITY;
 				if (mismatchLayerOn) {
 					const row = rowByGj?.get(id);
 					const dc = row?.devClass;
-					if (dc === 'tod_dominated' || dc === 'nontod_dominated' || dc === 'minimal') return 0.38;
+					if (dc === 'tod_dominated' || dc === 'nontod_dominated') return 0.38;
 				}
 				return 1;
 			})
@@ -1177,22 +1460,16 @@
 					if (mk === hoveredMismatchCluster) return 1;
 					return 0.35;
 				}
-				if (focusMismatchOnly) return vis ? 1 : NON_MISMATCH_FOCUS_ONLY;
 				return vis ? 1 : NON_MISMATCH_DIM;
 			});
 	}
 
-	function handleTractEnter(event, d) {
-		const id = d.properties?.gisjoin;
-		panelState.setHovered(id);
-		const mk = id ? mismatchKind(id) : null;
-		hoveredMismatchCluster =
-			mk && effectiveMismatchIds.has(id) ? mk : null;
+	function showTractTooltip(id, x, y, anchor = null) {
+		if (!id) return;
 		const el = containerEl;
 		if (!el) return;
 		const rowByGj = el.__pocRowByGj;
 		const row = rowByGj?.get(id);
-		const fmt = d3.format('.2f');
 		const fmt1 = d3.format('.1f');
 		const fmtInt = d3.format(',.0f');
 		const tractLookup = buildTractLookup();
@@ -1316,8 +1593,10 @@
 
 		tooltip = {
 			visible: true,
-			x: event.clientX,
-			y: event.clientY,
+			x,
+			y,
+			anchorX: anchor?.x ?? null,
+			anchorY: anchor?.y ?? null,
 			eyebrow: mismatchEyebrow ?? 'Census tract',
 			title: county && String(county) !== 'County Name' ? `Tract in ${tractPlace}` : `Tract: ${tractPlace}`,
 			badge: tier,
@@ -1325,6 +1604,15 @@
 			primaryRows,
 			secondaryRows
 		};
+		pinnedTooltipStage = anchor ? revealStage : null;
+	}
+
+	function handleTractEnter(event, d) {
+		const id = d.properties?.gisjoin;
+		panelState.setHovered(id);
+		const mk = id ? mismatchKind(id) : null;
+		hoveredMismatchCluster = mk && effectiveMismatchIds.has(id) ? mk : null;
+		showTractTooltip(id, event.clientX, event.clientY);
 	}
 
 	function handleMouseMove(event) {
@@ -1334,6 +1622,7 @@
 	function handleTractLeave() {
 		panelState.setHovered(null);
 		hoveredMismatchCluster = null;
+		pinnedTooltipStage = null;
 		tooltip = { ...tooltip, visible: false };
 	}
 
@@ -1383,7 +1672,7 @@
 		};
 	}
 
-	function handleDevEnter(event, d) {
+	function showDevelopmentTooltip(d, x, y, anchor = null) {
 		const fmtPct = d3.format('.1f');
 		const primaryRows = [
 			{ label: 'Municipality', value: d.municipal || '—' },
@@ -1411,16 +1700,28 @@
 		}
 		secondaryRows.push({ label: `Stops within ${todMi} mi`, value: String(nWithin) });
 		const affCap = developmentAffordableUnitsCapped(d);
-		if (affCap > 0) {
-			const src = d.affrd_source === 'lihtc' ? ' (HUD LIHTC)' : '';
-			primaryRows.push({ label: 'Affordable units', value: `${affCap}${src}` });
-		}
+		const src = d.affrd_source === 'lihtc' ? ' (HUD LIHTC)' : '';
+		primaryRows.push({
+			label: 'Affordable units',
+			value: affCap > 0 ? `${affCap}${src}` : (d.manualAffordableLabel || 'No affordable units listed')
+		});
+		const affPct = Number(d.affrd_percent);
+		secondaryRows.push({
+			label: 'Affordability',
+			value: Number.isFinite(affPct)
+				? `${fmtPct(affPct)}% income-restricted`
+				: affCap > 0
+					? 'Some affordable units listed'
+					: (d.manualAffordabilityNote || 'No affordability share listed')
+		});
 		secondaryRows.push({ label: 'Type', value: d.mixed_use ? 'Mixed-use' : 'Residential' });
 		if (d.rdv) secondaryRows.push({ label: 'Redevelopment', value: 'Yes' });
 		tooltip = {
 			visible: true,
-			x: event.clientX,
-			y: event.clientY,
+			x,
+			y,
+			anchorX: anchor?.x ?? null,
+			anchorY: anchor?.y ?? null,
 			eyebrow: 'MassBuilds project',
 			title: `Development: ${d.name || 'Unnamed project'}`,
 			badge: access ? 'Transit-accessible' : 'Not transit-accessible',
@@ -1428,11 +1729,18 @@
 			primaryRows,
 			secondaryRows
 		};
+		pinnedTooltipStage = anchor ? revealStage : null;
+	}
+
+	function handleDevEnter(event, d) {
+		showDevelopmentTooltip(d, event.clientX, event.clientY);
 	}
 
 	function handleOverlayLeave() {
 		panelState.setHovered(null);
 		hoveredMismatchCluster = null;
+		pinnedTooltipStage = null;
+		activeGuidedDevelopmentKey = null;
 		tooltip = { ...tooltip, visible: false };
 	}
 
@@ -1671,6 +1979,451 @@
 		});
 	});
 
+	const guidedContrastExamples = $derived.by(() => {
+		if (!guidedMode) return [];
+		const tractByGj = new Map((tractList ?? []).map((t) => [t.gisjoin, t]));
+		const rowByGj = new Map((nhgisRows ?? []).map((r) => [r.gisjoin, r]));
+		const curated = [
+			{
+				id: 'G2500250060600',
+				label: 'Tract in Suffolk County',
+				note:
+					'This Suffolk County tract shows very strong housing growth in a high-income, transit-accessible part of the core, reminding us that growth can still be concentrated in places that already hold strong access advantages.'
+			},
+			{
+				id: 'G2500170373600',
+				label: 'Tract in Middlesex County',
+				note:
+					'This tract sits along the Green Line corridor but still shows negative housing growth, which helps show that strong transit access does not guarantee new housing production.'
+			},
+			{
+				id: 'G2500270732902',
+				label: 'Tract in Worcester County',
+				note:
+					'This tract is far from any MBTA line but still shows very high housing growth, making the reverse contrast especially clear.'
+			}
+		];
+		return curated
+			.map((item) => {
+				const tract = tractByGj.get(item.id);
+				const row = rowByGj.get(item.id);
+				if (!tract || !row) return null;
+				const growth = Number(row?.census_hu_pct_change);
+				const stops = Number(tract?.transit_stops);
+				const county =
+					tract?.county && String(tract.county) !== 'County Name' ? String(tract.county) : null;
+				const incomeRaw =
+					row?.median_household_income ??
+					tract?.median_income_2020 ??
+					null;
+				const income = Number(incomeRaw);
+				if (!Number.isFinite(growth) || !Number.isFinite(stops)) return null;
+				return {
+					id: item.id,
+					county,
+					label: item.label,
+					growth,
+					stops,
+					income: Number.isFinite(income) ? income : null,
+					note: item.note
+				};
+			})
+			.filter(Boolean);
+	});
+	const guidedContrastFeatured = $derived(guidedContrastExamples?.[0] ?? null);
+
+	const guidedMismatchExamples = $derived.by(() => {
+		if (!guidedMode) return [];
+		const rowsByGj = new Map((nhgisRows ?? []).map((r) => [r.gisjoin, r]));
+		const tractByGj = new Map((tractList ?? []).map((t) => [t.gisjoin, t]));
+		const candidates = (tractGeo?.features ?? [])
+			.map((f) => {
+				const id = f?.properties?.gisjoin;
+				if (!id || !effectiveMismatchIds.has(id)) return null;
+				const row = rowsByGj.get(id);
+				const tract = tractByGj.get(id);
+				const mismatch = mismatchFlagsByGj.get(id);
+				const growth = Number(row?.census_hu_pct_change);
+				const stops = Number(tract?.transit_stops);
+				if (!Number.isFinite(growth) || !Number.isFinite(stops)) return null;
+				const county =
+					tract?.county && String(tract.county) !== 'County Name'
+						? String(tract.county)
+						: null;
+				const incomeRaw =
+					row?.median_household_income ??
+					mismatch?.medianHouseholdIncome ??
+					tract?.median_income_2020 ??
+					null;
+				const income = Number(incomeRaw);
+				const isHaLg = Boolean(mismatch?.isHighAccessLowGrowth);
+				return {
+					id,
+					county,
+					label: county ? `Tract in ${county}` : `Tract ${id}`,
+					kind: isHaLg ? 'High access, low growth' : 'High growth, low access',
+					note: isHaLg
+						? 'This red marker highlights a tract with strong transit access but relatively weak housing growth.'
+						: 'This red marker highlights a tract where housing growth has been stronger despite weaker transit access.',
+					growth,
+					stops,
+					income: Number.isFinite(income) ? income : null,
+					score: isHaLg ? stops - growth : growth - stops,
+					kindRank: isHaLg ? 0 : 1
+				};
+			})
+			.filter(Boolean)
+			.sort((a, b) => {
+				if (a.kindRank !== b.kindRank) return a.kindRank - b.kindRank;
+				return b.score - a.score;
+			});
+		const haLg = candidates.filter((d) => d.kindRank === 0).slice(0, 2);
+		const hgLa = candidates.filter((d) => d.kindRank === 1).slice(0, 2);
+		return [...haLg, ...hgLa];
+	});
+	const guidedMismatchFeatured = $derived(guidedMismatchExamples?.[0] ?? null);
+
+	const guidedDevelopmentExamples = $derived.by(() => {
+		if (!guidedMode || !tractList?.length) return [];
+		const { filteredDevs } = buildFilteredData(tractList, developments, panelState);
+		const transitM = transitDistanceMiToMetres(panelState.transitDistanceMi ?? 0.5);
+		const enriched = filteredDevs
+			.map((d) => {
+				const units = Number(d.hu) || 0;
+				const affordableUnits = developmentAffordableUnitsCapped(d);
+				const isTod = isDevelopmentTransitAccessible(d, transitM) && meetsTodMultifamilyFloor(d, panelState);
+				return {
+					...d,
+					units,
+					affordableUnits,
+					isTod,
+					categoryLabel: isTod ? 'TOD development' : 'Non-TOD development',
+					score: affordableUnits * 3 + units + (isTod ? 120 : 0)
+				};
+			})
+			.filter((d) => d.units > 0)
+			.sort((a, b) => b.score - a.score);
+		const tod = enriched.find((d) => d.isTod);
+		const nonTod = enriched.find((d) => !d.isTod);
+		const affordability = enriched.find((d) => d.affordableUnits > 0 && d !== tod && d !== nonTod) ?? enriched.find((d) => d.affordableUnits > 0);
+		return [tod, nonTod, affordability].filter(Boolean).slice(0, 3);
+	});
+
+	const guidedClusterDevelopmentExamples = $derived.by(() => {
+		if (!guidedMode || !tractList?.length) return [];
+		const { filteredDevs } = buildFilteredData(tractList, developments, panelState);
+		const transitM = transitDistanceMiToMetres(panelState.transitDistanceMi ?? 0.5);
+		const includesAny = (text, needles) => needles.some((needle) => text.includes(needle));
+		const curatedTargets = [
+			{
+				match: (name, municipal) =>
+					municipal === 'somerville' &&
+					includesAny(name, ['assembly row', 'assembly', 'xmbly', 'alloy assembly', 'montaje']),
+				preferred: (name) => includesAny(name, ['assembly row: block 2', 'block 2']),
+				sortBoost: 420,
+				importanceNote:
+					'Assembly Row is one of the clearest alignment cases in the region: dense housing delivered right on top of rapid transit, which is the TOD pattern planners often hope to reproduce.'
+			},
+			{
+				match: (name, municipal) =>
+					municipal === 'cambridge' &&
+					includesAny(name, ['cambridge crossing', 'north point', 'northpoint', 'earhart', 'park 151']),
+				preferred: (name) => includesAny(name, ['park 151', 'building i']),
+				sortBoost: 360,
+				importanceNote:
+					'Cambridge Crossing shows that strong TOD can still lean heavily market-rate, which matters because transit access alone does not guarantee affordability.'
+			},
+			{
+				match: (name, municipal) =>
+					includesAny(name, ['suffolk downs', 'suffolk']) ||
+					(municipal === 'revere' && includesAny(name, ['amaya'])),
+				preferred: (name) => includesAny(name, ['amaya suffolk downs', 'amaya']),
+				sortBoost: 380,
+				importanceNote:
+					'Suffolk Downs matters because it represents TOD at very large future scale, but the affordability story is phased over time rather than arriving all at once.'
+			},
+			{
+				match: (name) => includesAny(name, ['south bay', 'dorchester avenue', 'dorchester ave']),
+				preferred: (name) => includesAny(name, ['south bay town center']),
+				sortBoost: 260,
+				importanceNote:
+					'South Bay helps show a weaker TOD case: substantial housing growth near transit infrastructure, but not with the same direct, subway-oriented accessibility as the strongest core examples.'
+			},
+			{
+				match: (name, municipal) => municipal === 'boston' && includesAny(name, ['seaport', 'echelon']),
+				preferred: (name) => includesAny(name, ['echelon seaport']),
+				sortBoost: 300,
+				importanceNote:
+					'Seaport growth is important because it shows how a large share of housing and jobs can still accumulate outside the strongest rapid-transit geography.'
+			},
+			{
+				match: (_name, municipal) => municipal === 'quincy',
+				preferred: (name) => includesAny(name, ['avalon bay on quarry street', 'neponset landing apartments']),
+				sortBoost: 180,
+				importanceNote:
+					'A Quincy example helps show that even in a transit-served city, development is uneven and not every major project lands in the strongest TOD setting.'
+			},
+			{
+				match: (_name, municipal) => municipal === 'weymouth',
+				preferred: (name) => includesAny(name, ['fulton school', 'tirrell', 'commercial street']),
+				sortBoost: 170,
+				importanceNote:
+					'A Weymouth example shows the reverse case: meaningful multifamily growth can still occur in places that depend more on weaker or less frequent transit access.'
+			}
+		];
+		const enriched = filteredDevs
+			.map((d) => {
+				const lon = Number(d.longitude ?? d.lon);
+				const lat = Number(d.latitude ?? d.lat);
+				const units = Number(d.hu) || 0;
+				if (!Number.isFinite(lon) || !Number.isFinite(lat) || units <= 0) return null;
+				const affordableUnits = developmentAffordableUnitsCapped(d);
+				const isTod = isDevelopmentTransitAccessible(d, transitM) && meetsTodMultifamilyFloor(d, panelState);
+				const normalizedName = String(d.name || d.project_name || '').toLowerCase();
+				const normalizedMunicipal = String(d.municipal || '').toLowerCase();
+				const curated = curatedTargets.find((t) => t.match(normalizedName, normalizedMunicipal));
+				const preferredMatch = curated?.preferred?.(normalizedName) ?? false;
+				return {
+					...d,
+					units,
+					affordableUnits,
+					isTod,
+					categoryLabel: isTod ? 'TOD development' : 'Non-TOD development',
+					importanceNote: curated
+						? curated.importanceNote
+						: isTod
+							? 'This TOD project shows where new housing is being added close to transit, which is the alignment case the policy conversation often expects.'
+							: 'This non-TOD project shows that substantial housing can still be added outside the strongest transit geography, which matters for the mismatch argument.',
+					curatedPriority: curated ? 1 : 0,
+					score:
+						units +
+						affordableUnits * 3 +
+						(affordableUnits > 0 ? 120 : 0) +
+						(isTod ? 40 : 0) +
+						(curated?.sortBoost ?? 0) +
+						(preferredMatch ? 900 : 0)
+				};
+			})
+			.filter(Boolean)
+			.sort((a, b) => b.score - a.score);
+		const curated = enriched.filter((d) => d.curatedPriority === 1);
+		if (curated.length) return curated.slice(0, 4);
+		const tod = enriched.find((d) => d.isTod);
+		const nonTod = enriched.find((d) => !d.isTod);
+		const affordability = enriched.find((d) => d.affordableUnits > 0 && d !== tod && d !== nonTod) ?? enriched.find((d) => d.affordableUnits > 0);
+		return [tod, nonTod, affordability].filter(Boolean).slice(0, 3);
+	});
+
+	const manualImportantDevelopmentExamples = $derived.by(() => {
+		if (!guidedMode || !tractList?.length || !developments?.length) return [];
+		const { filteredDevs } = buildFilteredData(tractList, developments, panelState);
+		const transitM = transitDistanceMiToMetres(panelState.transitDistanceMi ?? 0.5);
+		const candidates = filteredDevs
+			.map((d) => {
+				const lon = Number(d.longitude ?? d.lon);
+				const lat = Number(d.latitude ?? d.lat);
+				const units = Number(d.hu) || 0;
+				if (!Number.isFinite(lon) || !Number.isFinite(lat) || units <= 0) return null;
+				const affordableUnits = developmentAffordableUnitsCapped(d);
+				const isTod = isDevelopmentTransitAccessible(d, transitM) && meetsTodMultifamilyFloor(d, panelState);
+				return {
+					...d,
+					units,
+					affordableUnits,
+					isTod,
+					categoryLabel: isTod ? 'TOD development' : 'Non-TOD development',
+					importanceNote: isTod
+						? 'Assembly Row is one of the clearest alignment cases in the region: dense housing delivered right on top of rapid transit, which is the TOD pattern planners often hope to reproduce.'
+						: 'This project helps show that meaningful housing growth can still happen outside the strongest transit geography, which matters for the mismatch argument.',
+					score: units + affordableUnits * 3 + (isTod ? 60 : 0)
+				};
+			})
+			.filter(Boolean);
+
+		const exactAssembly = candidates.find((d) => String(d.name || '').toLowerCase() === 'assembly row: block 2');
+		if (exactAssembly) return [exactAssembly];
+
+		const looseAssembly = candidates.find((d) =>
+			String(d.name || '').toLowerCase().includes('assembly row')
+		);
+		if (looseAssembly) return [looseAssembly];
+
+		return [];
+	});
+
+	const importantDevelopmentExamples = $derived.by(() => {
+		if (manualImportantDevelopmentExamples?.length) return manualImportantDevelopmentExamples;
+		if (guidedClusterDevelopmentExamples?.length) return guidedClusterDevelopmentExamples;
+		return guidedDevelopmentExamples ?? [];
+	});
+
+	const guidedStepTenExamples = $derived.by(() => {
+		const realByName = new Map((developments ?? []).map((d) => [String(d.name || d.project_name || ''), d]));
+		const specs = [
+			{
+				id: 'assembly-row-block-2',
+				label: 'Assembly Row: Block 2',
+				sourceName: 'Assembly Row: Block 2',
+				categoryLabel: 'Strong TOD example',
+				categoryTone: 'tod',
+				note:
+					'Somerville. Assembly Row is a strong TOD case: dense mixed-use growth delivered right on top of rapid transit, which is the alignment pattern planners often hope to reproduce.',
+				fallback: {
+					id: 'manual-assembly-row-block-2',
+					name: 'Assembly Row: Block 2',
+					municipal: 'Somerville',
+					hu: 123,
+					lon: -71.08045,
+					lat: 42.39535,
+					nearest_stop_dist_m: 89.44,
+					mixed_use: true,
+					rdv: true
+				},
+				manualAffordableLabel: 'No affordable units listed',
+				manualAffordabilityNote: 'This filtered MassBuilds record does not list an affordable-unit count for the project.'
+			},
+			{
+				id: 'amaya-suffolk-downs',
+				label: '16 Boardman St',
+				sourceName: '16 Boardman St',
+				categoryLabel: 'TOD example',
+				categoryTone: 'tod',
+				note:
+					'Boston. 16 Boardman St is a real East Boston project in the dataset and works as another TOD case: new housing added very close to rapid transit, which is the kind of alignment transit-oriented policy is meant to encourage.',
+				fallback: {
+					id: 'manual-amaya-suffolk-downs',
+					name: '16 Boardman St',
+					municipal: 'Boston',
+					hu: 19,
+					lon: -71.00884,
+					lat: 42.38745,
+					nearest_stop_dist_m: 49.69,
+					mixed_use: false,
+					rdv: false
+				},
+				manualAffordableLabel: 'Not listed in this record',
+				manualAffordabilityNote: 'This project-level record does not list an affordable-unit count.'
+			},
+			{
+				id: 'allston-yards',
+				label: '16 Dyer',
+				sourceName: '16 Dyer',
+				categoryLabel: 'Partial TOD example',
+				categoryTone: 'partial',
+				note:
+					'Boston. 16 Dyer is a real project in the dataset and works as a partial-TOD case: it is near transit, but not in the same way as the strongest flagship TOD examples.',
+				fallback: {
+					id: 'manual-allston-yards',
+					name: '16 Dyer',
+					municipal: 'Boston',
+					hu: 40,
+					lon: -71.07988,
+					lat: 42.28356,
+					nearest_stop_dist_m: 141.91,
+					mixed_use: false,
+					rdv: false
+				},
+				manualAffordableLabel: 'Not listed in this record',
+				manualAffordabilityNote: 'This record does not list an affordable-unit count.'
+			},
+			{
+				id: 'weymouth-landing',
+				label: 'Mahoney Farm',
+				sourceName: 'Mahoney Farm',
+				categoryLabel: 'Non-TOD contrast',
+				categoryTone: 'nontod',
+				note:
+					'Sudbury. Mahoney Farm is a real record in the dataset and works as a stronger non-TOD contrast case: housing growth can still happen well outside the strongest transit geography.',
+				fallback: {
+					id: 'manual-weymouth-landing',
+					name: 'Mahoney Farm',
+					municipal: 'Sudbury',
+					hu: 33,
+					lon: -71.43477,
+					lat: 42.34893,
+					nearest_stop_dist_m: 8128.67,
+					mixed_use: false,
+					rdv: false
+				},
+				manualAffordableLabel: 'Not listed in this record',
+				manualAffordabilityNote: 'This record does not list an affordable-unit count.'
+			},
+			{
+				id: 'pinehills-phase-1',
+				label: 'The Pinehills: Phase 1',
+				sourceName: 'The Pinehills: Phase 1',
+				categoryLabel: 'Non-TOD contrast',
+				categoryTone: 'nontod',
+				note:
+					'Plymouth. The Pinehills: Phase 1 shows very large-scale housing growth far from strong MBTA access, making the non-TOD side of the regional pattern especially clear.',
+				fallback: {
+					id: 'manual-pinehills-phase-1',
+					name: 'The Pinehills: Phase 1',
+					municipal: 'Plymouth',
+					hu: 1500,
+					lon: -70.59676,
+					lat: 41.89025,
+					nearest_stop_dist_m: 14196.92,
+					mixed_use: false,
+					rdv: false
+				},
+				manualAffordableLabel: '0 listed',
+				manualAffordabilityNote: 'This record lists no affordable units.'
+			}
+		];
+		return specs.map((spec) => {
+			const real = realByName.get(spec.sourceName) || null;
+			const dev = {
+				...(real ?? spec.fallback),
+				manualAffordableLabel: spec.manualAffordableLabel,
+				manualAffordabilityNote: spec.manualAffordabilityNote
+			};
+			const affordableUnits = developmentAffordableUnitsCapped(dev);
+			return {
+				id: spec.id,
+				label: spec.label,
+				categoryLabel: spec.categoryLabel,
+				categoryTone: spec.categoryTone,
+				note: spec.note,
+				dev,
+				units: Number(dev.hu) || 0,
+				affordableUnits,
+				showOnMapDisabled: false
+			};
+		});
+	});
+	const guidedStepTenFeatured = $derived(guidedStepTenExamples?.[0] ?? null);
+
+	function inspectGuidedExample(id) {
+		if (!id) return;
+		zoomToTract(id);
+		panelState.selectAll([id]);
+		panelState.setLastInteracted(id);
+		panelState.setHovered(id);
+		window.setTimeout(() => {
+			const anchor = tractScreenAnchor(id);
+			const fallbackX = typeof window !== 'undefined' ? window.innerWidth * 0.68 : 960;
+			const fallbackY = typeof window !== 'undefined' ? window.innerHeight * 0.34 : 360;
+			const x = anchor ? anchor.x + 72 : fallbackX;
+			const y = anchor ? anchor.y - 18 : fallbackY;
+			showTractTooltip(id, x, y, anchor);
+		}, 560);
+	}
+
+	function inspectGuidedDevelopment(d) {
+		if (!d) return;
+		activeGuidedDevelopmentKey = developmentKey(d);
+		zoomToDevelopment(d);
+		window.setTimeout(() => {
+			const anchor = developmentScreenAnchor(d);
+			const fallbackX = typeof window !== 'undefined' ? window.innerWidth * 0.7 : 980;
+			const fallbackY = typeof window !== 'undefined' ? window.innerHeight * 0.38 : 380;
+			const x = anchor ? anchor.x + 76 : fallbackX;
+			const y = anchor ? anchor.y - 14 : fallbackY;
+			showDevelopmentTooltip(d, x, y, anchor);
+		}, 640);
+	}
+
 	$effect(() => {
 		void structuralKey;
 		void containerEl;
@@ -1689,8 +2442,7 @@
 		void dataKey;
 		void revealStage;
 		void activeSpotlight;
-		void focusMismatchOnly;
-		void focusLowIncomeTracts;
+		void lowIncomeFocusOn;
 		void hoveredMismatchCluster;
 		void mismatchOutlineMode;
 		void panelState.hoveredTract;
@@ -1698,9 +2450,118 @@
 		void panelState.selectedTracts.size;
 		if (!containerEl || !svgRef) return;
 		updateChoropleth();
+		updateFocusRegion();
 		updateDevelopments();
 		updateInsightMarkers();
 		updateSelection();
+	});
+
+	$effect(() => {
+		void revealStage;
+		void guidedMode;
+		void tractList;
+		void tractGeo;
+		if (!guidedMode || !svgRef || !zoomBehaviorRef || !projectionRef) return;
+		if (revealStage === 0) {
+			if (guidedFocusDetail === 'core_access') {
+				const focus = tractFeatureByGeoFilter((t) => {
+					const lat = Number(t.centlat);
+					const lon = Number(t.centlon);
+					return Number.isFinite(lat) && Number.isFinite(lon) && lat >= 42.20 && lat <= 42.43 && lon >= -71.17 && lon <= -70.90;
+				});
+				zoomToFeatureGroup(focus, 7.8);
+				return;
+			}
+			recenterMap();
+			return;
+		}
+		if (revealStage <= 4 || revealStage === 8 || revealStage === 10) {
+			recenterMap();
+			return;
+		}
+		if (revealStage === 5) {
+			const focus = tractFeatureByGeoFilter((t) => {
+				const lat = Number(t.centlat);
+				const lon = Number(t.centlon);
+				return Number.isFinite(lat) && Number.isFinite(lon) && lat >= 42.30 && lat <= 42.43 && lon >= -71.17 && lon <= -70.98;
+			});
+			zoomToFeatureGroup(focus, 8.5);
+			return;
+		}
+		if (revealStage === 6) {
+			const focus = tractFeatureByGeoFilter((t) => {
+				const lat = Number(t.centlat);
+				const lon = Number(t.centlon);
+				return Number.isFinite(lat) && Number.isFinite(lon) && lat >= 42.20 && lat <= 42.47 && lon >= -71.10 && lon <= -70.90;
+			});
+			zoomToFeatureGroup(focus, 8.2);
+			return;
+		}
+		if (revealStage === 7) {
+			const rowsByGj = new Map((nhgisRows ?? []).map((r) => [r.gisjoin, r]));
+			const focus = tractFeatureByGeoFilter((t) => {
+				const lat = Number(t.centlat);
+				const lon = Number(t.centlon);
+				const row = rowsByGj.get(t.gisjoin);
+				const growth = Number(row?.census_hu_pct_change);
+				return Number.isFinite(lat) && Number.isFinite(lon) && Number.isFinite(growth) && lon <= -71.15 && lon >= -72.2 && lat >= 42.1 && lat <= 42.55 && growth >= 15;
+			});
+			zoomToFeatureGroup(focus, 7.2);
+			return;
+		}
+		if (revealStage === 9) {
+			const rowsByGj = new Map((nhgisRows ?? []).map((r) => [r.gisjoin, r]));
+			const focus = tractFeatureByGeoFilter((t) => {
+				const lat = Number(t.centlat);
+				const lon = Number(t.centlon);
+				const row = rowsByGj.get(t.gisjoin);
+				const growth = Number(row?.census_hu_pct_change);
+				return Number.isFinite(lat) && Number.isFinite(lon) && Number.isFinite(growth) && lon <= -71.15 && lon >= -72.1 && lat >= 42.1 && lat <= 42.55 && growth >= 10;
+			});
+			zoomToFeatureGroup(focus, 8.2);
+		}
+	});
+
+	$effect(() => {
+		void revealStage;
+		void guidedMode;
+		void guidedFocusDetail;
+		void guidedContrastFeatured;
+		void guidedMismatchFeatured;
+		void guidedStepTenFeatured;
+		if (!guidedMode) {
+			lastAutoFocusedStage = null;
+			return;
+		}
+		const focusKey = `${revealStage}:${guidedFocusDetail ?? 'base'}`;
+		if (lastAutoFocusedStage === focusKey) return;
+		if (revealStage === 2 && guidedFocusDetail === 'contrast_example' && guidedContrastFeatured?.id) {
+			lastAutoFocusedStage = focusKey;
+			inspectGuidedExample(guidedContrastFeatured.id);
+			return;
+		}
+		if (revealStage === 3 && guidedFocusDetail === 'mismatch_example' && guidedMismatchFeatured?.id) {
+			lastAutoFocusedStage = focusKey;
+			inspectGuidedExample(guidedMismatchFeatured.id);
+			return;
+		}
+		if (revealStage === 9 && guidedFocusDetail === 'project_example' && guidedStepTenFeatured?.dev) {
+			lastAutoFocusedStage = focusKey;
+			inspectGuidedDevelopment(guidedStepTenFeatured.dev);
+			return;
+		}
+		lastAutoFocusedStage = focusKey;
+	});
+
+	$effect(() => {
+		void revealStage;
+		if (!guidedMode) return;
+		if (pinnedTooltipStage != null && revealStage !== pinnedTooltipStage) {
+			tooltip = { ...tooltip, visible: false, anchorX: null, anchorY: null };
+			pinnedTooltipStage = null;
+			activeGuidedDevelopmentKey = null;
+			panelState.setHovered(null);
+		}
 	});
 
 	$effect(() => {
@@ -1713,8 +2574,7 @@
 		void panelState.hoveredTract;
 		void panelState.selectedTracts;
 		void panelState.selectedTracts.size;
-		void focusMismatchOnly;
-		void focusLowIncomeTracts;
+		void lowIncomeFocusOn;
 		void hoveredMismatchCluster;
 		void mismatchOutlineMode;
 		if (!containerEl || !svgRef) return;
@@ -1724,48 +2584,38 @@
 
 	$effect(() => {
 		if (stepEls.filter(Boolean).length !== stepContent.length) return;
-		const observer = new IntersectionObserver(
-			(entries) => {
-				const visible = entries
-					.filter((entry) => entry.isIntersecting)
-					.sort((a, b) => b.intersectionRatio - a.intersectionRatio);
-				if (!visible.length) return;
-				const next = Number(visible[0].target.getAttribute('data-step-index'));
-				if (Number.isFinite(next)) revealStage = next;
-			},
-			{
-				root: null,
-				threshold: [0.35, 0.6, 0.85],
-				rootMargin: '-10% 0px -30% 0px'
+		let frame = 0;
+		const updateStageFromScroll = () => {
+			frame = 0;
+			const triggerY = window.innerHeight * 0.42;
+			let next = 0;
+			for (let i = 0; i < stepEls.length; i += 1) {
+				const el = stepEls[i];
+				if (!el) continue;
+				const rect = el.getBoundingClientRect();
+				if (rect.top <= triggerY) next = i;
 			}
-		);
-		for (const el of stepEls) {
-			if (el) observer.observe(el);
-		}
-		return () => observer.disconnect();
-	});
-
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		let raf = 0;
-		const onResize = () => {
-			cancelAnimationFrame(raf);
-			raf = requestAnimationFrame(() => {
-				chartResizeTick += 1;
-			});
+			let nextFocus = null;
+			for (const item of focusWaypointEls) {
+				if (!item || item.stage !== next) continue;
+				const rect = item.node.getBoundingClientRect();
+				if (rect.top <= triggerY) nextFocus = item.key;
+			}
+			revealStage = next;
+			guidedFocusDetail = nextFocus;
 		};
-		window.addEventListener('resize', onResize);
+		const scheduleUpdate = () => {
+			if (frame) return;
+			frame = window.requestAnimationFrame(updateStageFromScroll);
+		};
+		scheduleUpdate();
+		window.addEventListener('scroll', scheduleUpdate, { passive: true });
+		window.addEventListener('resize', scheduleUpdate);
 		return () => {
-			window.removeEventListener('resize', onResize);
-			cancelAnimationFrame(raf);
+			if (frame) window.cancelAnimationFrame(frame);
+			window.removeEventListener('scroll', scheduleUpdate);
+			window.removeEventListener('resize', scheduleUpdate);
 		};
-	});
-
-	$effect(() => {
-		void chartResizeTick;
-		const state = supplementalChartState;
-		if (elComposition) renderMuniComposition(elComposition, supplementalProjectRows, state);
-		if (elRanked) renderMuniRankedGrowth(elRanked, supplementalMuniRows);
 	});
 
 	onDestroy(() => {
@@ -1779,270 +2629,71 @@
 <div class="poc-nhgis-map">
 	<div class="poc-scrolly">
 		<div class="poc-scrolly-map">
+			{#if !guidedMode}
 			<div class="poc-methods poc-methods--lead card-key" role="note" aria-label="TOD definitions">
-				<p class="poc-methods__title">Definitions</p>
+				<p class="poc-methods__title">Key definitions</p>
 				<p class="poc-methods__text">
-					<strong>TOD developments</strong> are projects within <strong>{d3.format('.2~f')(panelState.transitDistanceMi ?? 0.5)} miles</strong> of an MBTA stop; other projects are treated as <strong>non-TOD developments</strong>.
-					<strong>TOD-dominated tracts</strong> are tracts with at least <strong>{d3.format('.0f')((panelState.todFractionCutoff ?? 0.5) * 100)}%</strong> of filtered new units in TOD developments and at least <strong>{d3.format('.1f')(panelState.sigDevMinPctStockIncrease ?? 2)}%</strong> housing stock increase.
-					<strong>Non-TOD-dominated tracts</strong> meet the same development threshold but fall below that TOD share cutoff.
-					<strong>Minimal development</strong> tracts stay below the stock-increase threshold.
+					<strong>TOD developments</strong> are projects within <strong>{d3.format('.2~f')(panelState.transitDistanceMi ?? 0.5)} miles</strong> of an MBTA stop; all others count as <strong>non-TOD</strong>.
+					<strong>TOD-dominated tracts</strong> are places where at least <strong>{d3.format('.0f')((panelState.todFractionCutoff ?? 0.5) * 100)}%</strong> of filtered new units come from TOD projects and housing stock grows by at least <strong>{d3.format('.1f')(panelState.sigDevMinPctStockIncrease ?? 2)}%</strong>.
+					<strong>Non-TOD-dominated tracts</strong> clear the same growth threshold but fall below that TOD share.
+					<strong>Minimal development</strong> tracts stay below the stock-growth threshold.
 				</p>
 			</div>
-			<div class="poc-methods poc-methods--encoding card-key" role="note" aria-label="Visual encoding and scrolly map">
-				<p class="poc-methods__title">How to read this map</p>
+			<div class="poc-methods poc-methods--encoding card-key" role="note" aria-label="Design decisions">
+				<p class="poc-methods__title">Why We Designed It This Way</p>
 				<ul class="poc-methods__list poc-methods__list--encoding">
 					<li>
-						<span class="poc-methods__label">Fill (choropleth):</span>
-						Census % change in housing units for the selected period (diverging red–neutral–blue). This is the primary encoding; it does not change across scroll steps.
+						<span class="poc-methods__label">One steady map scale:</span>
+						We kept the choropleth scale fixed from start to finish so the reader always has the same baseline in view. That way, when outlines, mismatch layers, and project dots appear, they add context instead of changing the meaning of the fill colors.
 					</li>
 					<li>
-						<span class="poc-methods__label">Cohort outlines (steps 2–4):</span>
-						Teal / orange / slate rings show MassBuilds-derived tract classes (TOD-dominated, non-TOD-dominated, minimal development), with a light interior tint—not a second color scale for growth.
+						<span class="poc-methods__label">Outlines instead of more fill:</span>
+						We used outlines for the tract groups because the fill is already carrying the main growth signal. If we had used another full set of fill colors, the map would have become much harder to read and the central comparison would have gotten muddy.
 					</li>
 					<li>
-						<span class="poc-methods__label">Mismatch overlays (steps 3–4):</span>
-						Violet and dashed lavender mark quartile-based “access vs growth” tension (transit stops vs census growth). Outlines only—so the story stays tied to the choropleth. Step 3 introduces one mismatch type; step 4 adds the second; step 4 can add optional project dots.
+						<span class="poc-methods__label">One step at a time:</span>
+						The walkthrough builds one layer at a time so each step answers a slightly different question. This slows the reader down in a useful way and makes it easier to see what the cohort outlines, mismatch marks, and project dots each contribute.
 					</li>
 					<li>
-						<span class="poc-methods__label">Scrolly structure:</span>
-						Each step adds at most one layer (fill → cohorts → first mismatch → both mismatches + dots) to limit cognitive load. Toggles (mismatch-only, low-income emphasis) are optional filters for when the field feels dense.
+						<span class="poc-methods__label">The main highlights stand out:</span>
+						Mismatch areas and project dots use different mark types so they can stand out without taking over the whole map. This lets the story shift attention when needed while still keeping the base geography and tract-level growth visible.
 					</li>
 					<li>
-						<span class="poc-methods__label">Income:</span>
-						Median income and “lower income” (&lt;$125k) appear in tooltips and supplementary charts—not as map fill—so the view stays legible.
+						<span class="poc-methods__label">Extra detail stays off the map:</span>
+						Income, selected-tract details, and comparisons live in side panels and tooltips rather than being encoded directly on the map. That keeps the main view readable while still giving the reader a path to more detail when they want it.
 					</li>
 				</ul>
 			</div>
 			<div class="poc-methods poc-methods--assumptions card-key" role="note" aria-label="Assumptions used">
-				<p class="poc-methods__title">Assumptions Used</p>
+				<p class="poc-methods__title">Assumptions we use</p>
 				<ul class="poc-methods__list">
 					<li>
 						<span class="poc-methods__label">TOD access assumption:</span>
-						Distance to MBTA is approximated with a fixed cutoff of
+						MBTA access is approximated with a fixed cutoff of
 						<strong> {d3.format('.2~f')(panelState.transitDistanceMi ?? 0.5)} miles</strong>.
 					</li>
 					<li>
 						<span class="poc-methods__label">Tract grouping assumption:</span>
-						Classification uses
+						Tracts are grouped using
 						<strong> {d3.format('.1f')(panelState.sigDevMinPctStockIncrease ?? 2)}%</strong> housing stock increase as the significant-development floor and
 						<strong> {d3.format('.0f')((panelState.todFractionCutoff ?? 0.5) * 100)}%</strong> TOD share as the TOD-dominated cutoff.
 					</li>
 					<li>
 						<span class="poc-methods__label">Aggregation assumption:</span>
-						Displayed averages are simple tract-level means (each tract weighted equally), not weighted by tract population or unit counts.
+						Averages shown here are simple tract means, so every tract counts equally rather than being weighted by population or units.
 					</li>
 					<li>
 						<span class="poc-methods__label">Data quality assumption:</span>
-						Tan tracts are excluded from choropleth interpretation when % change is missing or unreliable.
+						Tan tracts mark places where % change is missing or unreliable.
 					</li>
 				</ul>
 			</div>
+			{/if}
 
-			<div class="map-wrap">
-				<div class="map-left-column">
-					<div class="poc-legend-row">
-				<fieldset class="poc-transit-field">
-					<legend class="poc-transit-legend">MBTA Overlays</legend>
-					<div class="poc-transit-compact" role="group" aria-label="Transit overlays">
-						<div class="poc-t-row">
-							<span class="poc-t-h"></span>
-							<span class="poc-t-h">Lines</span>
-							<span class="poc-t-h">Stops</span>
-						</div>
-						<div class="poc-t-row">
-							<span class="poc-t-l">Bus</span>
-							<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showBusLines} /></label>
-							<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showBusStops} /></label>
-						</div>
-						<div class="poc-t-row">
-							<span class="poc-t-l">Rapid Transit</span>
-							<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showRailLines} /></label>
-							<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showRailStops} /></label>
-						</div>
-						<div class="poc-t-row">
-							<span class="poc-t-l">Commuter Rail</span>
-							<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showCommuterRailLines} /></label>
-							<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showCommuterRailStops} /></label>
-						</div>
-					</div>
-				</fieldset>
-
-				<div class="poc-map-key card-key" role="region" aria-label="Map legend">
-					<div
-						class="poc-map-key-compact"
-						class:poc-map-key-compact--split={revealStage >= 3}
-					>
-						<div class="poc-map-key-col poc-map-key-col--tract">
-							<p class="poc-key-one poc-key-tract-fill">
-								<strong>Tract fill</strong>
-								<span class="poc-key-tract-fill-body">
-									<span class="poc-key-tract-fill-line">
-										Census % housing growth ({periodDisplayLabel(panelState.timePeriod)}), vs housing stock at period start. Full scale on map colorbar.
-									</span>
-									<span
-										class="poc-key-tract-bar"
-										style="background: linear-gradient(to right, {MBTA_RED}, {MBTA_MAP_NEUTRAL}, {MBTA_BLUE});"
-										role="img"
-										aria-label="Percent housing growth scale: more negative toward red, more positive toward blue"
-									></span>
-									<span class="poc-key-tract-bar-labels" aria-hidden="true">
-										<span class="poc-key-tract-bar-label">- lower growth</span>
-										<span class="poc-key-tract-bar-label">+ higher growth</span>
-									</span>
-								</span>
-							</p>
-							<p class="poc-key-no-data">
-								<span
-									class="poc-key-fill-swatch poc-key-fill-swatch--no-data"
-									style="background: #e7e0d5;"
-									role="img"
-									aria-hidden="true"
-								></span>
-								<span class="poc-key-no-data-text">Tan fill: excluded due to limited data (missing or unreliable % change).</span>
-							</p>
-							{#if revealStage >= 1}
-								<ul class="poc-key-rings">
-									<li><span class="poc-k-ring poc-k-ring--tod"></span> TOD-dominated (significant development)</li>
-									<li><span class="poc-k-ring poc-k-ring--nontod"></span> Non-TOD-dominated (significant development)</li>
-									<li><span class="poc-k-ring poc-k-ring--min"></span> Minimal development</li>
-								</ul>
-							{/if}
-							{#if revealStage >= 2}
-								<p class="poc-key-mismatch-sub">
-									Mismatch outlines (quartiles): transit access vs housing growth are not always aligned—see charts below for income context.
-								</p>
-								<ul class="poc-key-rings">
-									<li>
-										<span class="poc-k-ring poc-k-ring--mismatch-ha"></span> High access, low growth (solid purple)
-									</li>
-									<li>
-										<span class="poc-k-ring poc-k-ring--mismatch-hg"></span> High growth, low access (dashed lavender)
-									</li>
-								</ul>
-							{/if}
-						</div>
-						{#if revealStage >= 3}
-							<div class="poc-map-key-col poc-map-key-col--dev">
-								<p class="poc-key-one poc-key-dev">
-									<strong>Developments</strong>
-									<span class="poc-key-tract-fill-body">
-										<span class="poc-key-tract-fill-line">
-											Fill = share of new units that are multi-family. Full scale on map colorbar.
-										</span>
-										<span
-											class="poc-key-tract-bar"
-											style="background: linear-gradient(to right, {MBTA_ORANGE}, {MBTA_GREEN});"
-											role="img"
-											aria-label="Share of new units that are multi-family: lower toward orange, higher toward green"
-										></span>
-									</span>
-								</p>
-								{#if devSizeLegendTicks && devSizeLegendTicks.length > 0}
-									<div class="poc-key-dev-sizes" aria-label="Development dot size by unit count">
-										<p class="poc-key-dev-sizes-title">Units (radius ∝ √units, same as map)</p>
-										<ul class="poc-key-dev-sizes-list">
-											{#each devSizeLegendTicks as t, i (i)}
-												<li class="poc-key-dev-size-item">
-													<span class="poc-key-dev-size-dot-wrap">
-														<span
-															class="poc-key-dev-size-dot"
-															style:width="{2 * t.rPx}px"
-															style:height="{2 * t.rPx}px"
-														></span>
-													</span>
-													<span class="poc-key-dev-size-num">{formatDevUnitsLegend(t.units)}</span>
-												</li>
-											{/each}
-										</ul>
-									</div>
-								{/if}
-								<ul class="poc-key-rings" aria-label="Development dot outlines">
-									<li>
-										<span class="poc-k-ring poc-k-ring--dev-access"></span> Transit-accessible
-									</li>
-									<li>
-										<span class="poc-k-ring poc-k-ring--dev-noaccess"></span> Not transit-accessible
-									</li>
-								</ul>
-							</div>
-						{/if}
-					</div>
-				</div>
-				</div>
-
-				<div
-					class="map-main"
-					role="region"
-					aria-label="Interactive census tract map"
-					onmouseleave={handleOverlayLeave}
-				>
-					<div class="poc-stage-chip">Map step {revealStage + 1} of 4</div>
-					<div class="poc-map-callouts card-key" role="note" aria-label="What to notice in this step">
-						<p class="poc-detail__kicker">What to notice</p>
-						<ul class="poc-map-callouts__list">
-							{#each mapCallouts as c, i (i)}
-								<li>{c}</li>
-							{/each}
-						</ul>
-					</div>
-					<div class="map-widget">
-						<div class="map-widget__controls" role="group" aria-label="Map zoom and reset controls">
-							<button class="poc-map-control" type="button" onclick={zoomInMap} aria-label="Zoom in">+</button>
-							<button class="poc-map-control" type="button" onclick={zoomOutMap} aria-label="Zoom out">−</button>
-							<button class="poc-map-control poc-map-control--wide" type="button" onclick={recenterMap}>Recenter</button>
-						</div>
-						<div class="map-root" bind:this={containerEl}></div>
-					</div>
-					{#if tooltip.visible}
-						<div
-							class="map-tooltip"
-							style:left="{tooltip.x + 12}px"
-							style:top="{tooltip.y + 12}px"
-						>
-							<div class="map-tooltip__header">
-								<div class="map-tooltip__header-copy">
-									{#if tooltip.eyebrow}
-										<p class="map-tooltip__eyebrow">{tooltip.eyebrow}</p>
-									{/if}
-									<p class="map-tooltip__title">{tooltip.title}</p>
-								</div>
-								{#if tooltip.badge}
-									<span class="map-tooltip__badge map-tooltip__badge--{tooltip.badgeTone}">{tooltip.badge}</span>
-								{/if}
-							</div>
-							{#if tooltip.primaryRows.length > 0}
-								<div
-									class="map-tooltip__primary"
-									class:map-tooltip__primary--tod={tooltip.badgeTone === 'tod'}
-									class:map-tooltip__primary--nontod={tooltip.badgeTone === 'nontod'}
-									class:map-tooltip__primary--minimal={tooltip.badgeTone === 'minimal'}
-								>
-									{#each tooltip.primaryRows as row, i (i)}
-										<div class="map-tooltip__primary-row">
-											<span class="map-tooltip__primary-label">{row.label}</span>
-											<span class="map-tooltip__primary-value">{row.value}</span>
-										</div>
-									{/each}
-								</div>
-							{/if}
-							{#if tooltip.secondaryRows.length > 0}
-								<div class="map-tooltip__details">
-									<p class="map-tooltip__details-label">Details</p>
-									<div class="map-tooltip__rows">
-										{#each tooltip.secondaryRows as row, i (i)}
-											<div class="map-tooltip__row">
-												<span class="map-tooltip__label">{row.label}</span>
-												<span class="map-tooltip__value">{row.value}</span>
-											</div>
-										{/each}
-									</div>
-								</div>
-							{/if}
-						</div>
-					{/if}
-				</div>
-
-				<div class="poc-control-stack">
+			<div class="poc-scrolly-shell">
+				<div class="poc-scrolly-left">
+					{#if !guidedMode}
+					<div class="poc-control-stack">
 				<div class="poc-side-cards">
 
 				<div class="poc-spotlight card-key" role="group" aria-label="Tract cohort spotlight">
@@ -2138,7 +2789,7 @@
 						<div class="poc-detail card-key" role="region" aria-label="Selected tract detail">
 							<div class="poc-detail__head">
 								<div>
-									<p class="poc-detail__kicker">Selected tract detail</p>
+									<p class="poc-detail__kicker">Selected tract</p>
 									<p class="poc-detail__title">{selectedTractDetail.title}</p>
 								</div>
 							<div class="poc-detail__actions">
@@ -2209,7 +2860,7 @@
 				<div class="poc-compare card-key" role="region" aria-label="Selected tract comparison chart">
 					<div class="poc-compare__head">
 						<div>
-							<p class="poc-detail__kicker">Selected tract chart</p>
+							<p class="poc-detail__kicker">Selection chart</p>
 							<p class="poc-detail__title">{selectionComparison.title}</p>
 						</div>
 						<div class="poc-compare__metric-tabs">
@@ -2260,23 +2911,11 @@
 				<div class="poc-insight card-key" role="group" aria-label="Mismatch focus">
 					<p class="poc-detail__kicker">Mismatch focus</p>
 					<label class="poc-focus-toggle">
-						<input type="checkbox" bind:checked={focusMismatchOnly} />
-						<span>Show mismatch areas only</span>
-					</label>
-					<label class="poc-focus-toggle">
 						<input type="checkbox" bind:checked={focusLowIncomeTracts} />
-						<span>Show lower-income tracts (&lt;$125k median)</span>
+						<span>Bring lower-income tracts (&lt;$125k median) forward</span>
 					</label>
 					<p class="poc-detail__kicker" style="margin-top: 12px">Mismatch outlines</p>
 					<div class="poc-mismatch-mode" role="group" aria-label="Which mismatch categories to outline">
-						<button
-							type="button"
-							class="poc-mismatch-mode__btn"
-							class:poc-mismatch-mode__btn--active={mismatchOutlineMode === 'follow_scroll'}
-							onclick={() => (mismatchOutlineMode = 'follow_scroll')}
-						>
-							Match scroll
-						</button>
 						<button
 							type="button"
 							class="poc-mismatch-mode__btn"
@@ -2311,15 +2950,7 @@
 						</button>
 					</div>
 					<p class="poc-detail__summary">
-						When on, non-mismatch tracts fade so the access–growth patterns are easier to read. Default follows
-						scroll steps; use the buttons above to explore one or both mismatch types anytime.
-					</p>
-					<p class="poc-detail__summary">
-						The lower-income toggle drops growth color to a neutral fill for tracts at or above the $125k median—exploratory;
-						it does not replace the choropleth legend for those tracts.
-					</p>
-					<p class="poc-detail__summary">
-						Markers flag notable examples within the visible mismatch set. Click a marker to zoom to that tract.
+						Use these controls to isolate one mismatch pattern, highlight lower-income tracts, or jump to a notable example with the red markers.
 					</p>
 				</div>
 
@@ -2328,7 +2959,7 @@
 						<div class="poc-detail__head">
 							<div>
 								<p class="poc-detail__kicker">A/B tract comparison</p>
-								<p class="poc-detail__title">Shift-click tracts to compare side by side</p>
+								<p class="poc-detail__title">Shift-click two tracts to compare them side by side</p>
 							</div>
 							<button class="poc-detail__btn poc-detail__btn--ghost" type="button" onclick={() => panelState.clearComparisonPair()}>
 								Reset
@@ -2350,25 +2981,230 @@
 							{/each}
 						</div>
 					</div>
+				{/if}
+					</div>
 					{/if}
+
+					<div class="map-wrap">
+						<div class="map-visual-column">
+							<div class="map-left-column">
+								<div class="poc-legend-row">
+					{#if !guidedMode}
+					<fieldset class="poc-transit-field">
+						<legend class="poc-transit-legend">MBTA Overlays</legend>
+						<div class="poc-transit-compact" role="group" aria-label="Transit overlays">
+							<div class="poc-t-row">
+								<span class="poc-t-h"></span>
+								<span class="poc-t-h">Lines</span>
+								<span class="poc-t-h">Stops</span>
+							</div>
+							<div class="poc-t-row">
+								<span class="poc-t-l">Bus</span>
+								<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showBusLines} /></label>
+								<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showBusStops} /></label>
+							</div>
+							<div class="poc-t-row">
+								<span class="poc-t-l">Rapid Transit</span>
+								<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showRailLines} /></label>
+								<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showRailStops} /></label>
+							</div>
+							<div class="poc-t-row">
+								<span class="poc-t-l">Commuter Rail</span>
+								<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showCommuterRailLines} /></label>
+								<label class="poc-t-cell"><input type="checkbox" bind:checked={panelState.showCommuterRailStops} /></label>
+							</div>
+						</div>
+					</fieldset>
+					{/if}
+
+					<div class="poc-map-key card-key" role="region" aria-label="Map legend">
+						<div
+							class="poc-map-key-compact"
+							class:poc-map-key-compact--split={revealStage === 1}
+						>
+							<div class="poc-map-key-col poc-map-key-col--tract">
+								<p class="poc-key-one poc-key-tract-fill">
+									<strong>Tract fill</strong>
+									<span class="poc-key-tract-fill-body">
+										<span class="poc-key-tract-fill-line">
+											Census % housing growth ({periodDisplayLabel(panelState.timePeriod)}), vs housing stock at period start. Full scale on map colorbar.
+										</span>
+										<span
+											class="poc-key-tract-bar"
+											style="background: linear-gradient(to right, {MBTA_RED}, {MBTA_MAP_NEUTRAL}, {MBTA_BLUE});"
+											role="img"
+											aria-label="Percent housing growth scale: more negative toward red, more positive toward blue"
+										></span>
+										<span class="poc-key-tract-bar-labels" aria-hidden="true">
+											<span class="poc-key-tract-bar-label">- lower growth</span>
+											<span class="poc-key-tract-bar-label">+ higher growth</span>
+										</span>
+									</span>
+								</p>
+								<p class="poc-key-no-data">
+									<span
+										class="poc-key-fill-swatch poc-key-fill-swatch--no-data"
+										style="background: #e7e0d5;"
+										role="img"
+										aria-hidden="true"
+									></span>
+									<span class="poc-key-no-data-text">Tan fill: excluded due to limited data (missing or unreliable % change).</span>
+								</p>
+							{#if showCohortOutlines()}
+								<ul class="poc-key-rings">
+									<li><span class="poc-k-ring poc-k-ring--tod"></span> TOD-dominated (significant development)</li>
+									<li><span class="poc-k-ring poc-k-ring--nontod"></span> Non-TOD-dominated (significant development)</li>
+								</ul>
+							{/if}
+							{#if showMismatchOutlines()}
+								<p class="poc-key-mismatch-sub">
+									Mismatch outlines (quartiles): transit access vs housing growth are not always aligned—see charts below for income context.
+								</p>
+									<ul class="poc-key-rings">
+										<li>
+											<span class="poc-k-ring poc-k-ring--mismatch-ha"></span> High access, low growth (solid purple)
+										</li>
+										<li>
+											<span class="poc-k-ring poc-k-ring--mismatch-hg"></span> High growth, low access (dashed lavender)
+										</li>
+									</ul>
+								{/if}
+							</div>
+							{#if showDevelopmentDots()}
+								<div class="poc-map-key-col poc-map-key-col--dev">
+									<p class="poc-key-one poc-key-dev">
+										<strong>Developments</strong>
+										<span class="poc-key-tract-fill-body">
+											<span class="poc-key-tract-fill-line">
+												Fill = share of new units that are multi-family. Darker purple fill means a higher multi-family share.
+											</span>
+											<span
+												class="poc-key-tract-bar"
+												style="background: linear-gradient(to right, #ffffff, #7c3f98);"
+												role="img"
+												aria-label="Share of new units that are multi-family: lower toward white, higher toward purple"
+											></span>
+										</span>
+									</p>
+									{#if devSizeLegendTicks && devSizeLegendTicks.length > 0}
+										<div class="poc-key-dev-sizes" aria-label="Development dot size by unit count">
+											<p class="poc-key-dev-sizes-title">Units (radius ∝ √units, same as map)</p>
+											<ul class="poc-key-dev-sizes-list">
+												{#each devSizeLegendTicks as t, i (i)}
+													<li class="poc-key-dev-size-item">
+														<span class="poc-key-dev-size-dot-wrap">
+															<span
+																class="poc-key-dev-size-dot"
+																style:width="{2 * t.rPx}px"
+																style:height="{2 * t.rPx}px"
+															></span>
+														</span>
+														<span class="poc-key-dev-size-num">{formatDevUnitsLegend(t.units)}</span>
+													</li>
+												{/each}
+											</ul>
+										</div>
+									{/if}
+									<ul class="poc-key-rings" aria-label="Development dot outlines">
+										<li>
+											<span class="poc-k-ring poc-k-ring--dev-access"></span> Transit-accessible
+										</li>
+										<li>
+											<span class="poc-k-ring poc-k-ring--dev-noaccess"></span> Not transit-accessible
+										</li>
+									</ul>
+								</div>
+							{/if}
+						</div>
+					</div>
+					</div>
 					</div>
 
-					<div class="poc-supp-grid">
-						<section class="poc-supp-card card-key" aria-label="TOD versus non-TOD composition by year">
-							<h3 class="poc-supp-title">TOD vs non-TOD mix by year</h3>
-							<div class="poc-supp-chart" bind:this={elComposition}></div>
-						</section>
-						<section class="poc-supp-card card-key" aria-label="Ranked municipalities by development volume">
-							<h3 class="poc-supp-title">New development is concentrated in a small set of municipalities</h3>
-							<div class="poc-supp-chart" bind:this={elRanked}></div>
-						</section>
+					<div
+						class="map-main"
+						role="region"
+						aria-label="Interactive census tract map"
+						onmouseleave={handleOverlayLeave}
+					>
+						<div class="map-widget">
+							<div class="map-widget__controls" role="group" aria-label="Map zoom and reset controls">
+								<button class="poc-map-control" type="button" onclick={zoomInMap} aria-label="Zoom in">+</button>
+								<button class="poc-map-control" type="button" onclick={zoomOutMap} aria-label="Zoom out">−</button>
+								<button class="poc-map-control poc-map-control--wide" type="button" onclick={recenterMap}>Recenter</button>
+							</div>
+							<div class="map-root" bind:this={containerEl}></div>
+						</div>
+						{#if tooltip.visible}
+							<div
+								class="map-tooltip"
+								bind:this={tooltipEl}
+								style:left="{tooltipPosition.left}px"
+								style:top="{tooltipPosition.top}px"
+							>
+								{#if tooltipArrow}
+									<span
+										class="map-tooltip__arrow map-tooltip__arrow--{tooltipArrow.side}"
+										style:left={tooltipArrow.left != null ? `${tooltipArrow.left}px` : undefined}
+										style:top={tooltipArrow.top != null ? `${tooltipArrow.top}px` : undefined}
+										aria-hidden="true"
+									></span>
+								{/if}
+								<div class="map-tooltip__header">
+									<div class="map-tooltip__header-copy">
+										{#if tooltip.eyebrow}
+											<p class="map-tooltip__eyebrow">{tooltip.eyebrow}</p>
+										{/if}
+										<p class="map-tooltip__title">{tooltip.title}</p>
+									</div>
+									{#if tooltip.badge}
+										<span class="map-tooltip__badge map-tooltip__badge--{tooltip.badgeTone}">{tooltip.badge}</span>
+									{/if}
+								</div>
+								{#if tooltip.primaryRows.length > 0}
+									<div
+										class="map-tooltip__primary"
+										class:map-tooltip__primary--tod={tooltip.badgeTone === 'tod'}
+										class:map-tooltip__primary--nontod={tooltip.badgeTone === 'nontod'}
+										class:map-tooltip__primary--minimal={tooltip.badgeTone === 'minimal'}
+									>
+										{#each tooltip.primaryRows as row, i (i)}
+											<div
+												class="map-tooltip__primary-row"
+												class:map-tooltip__primary-row--stack={String(row.value ?? '').length > 20}
+											>
+												<span class="map-tooltip__primary-label">{row.label}</span>
+												<span class="map-tooltip__primary-value">{row.value}</span>
+											</div>
+										{/each}
+									</div>
+								{/if}
+								{#if tooltip.secondaryRows.length > 0}
+									<div class="map-tooltip__details">
+										<p class="map-tooltip__details-label">Details</p>
+										<div class="map-tooltip__rows">
+											{#each tooltip.secondaryRows as row, i (i)}
+												<div
+													class="map-tooltip__row"
+													class:map-tooltip__row--stack={String(row.value ?? '').length > 26}
+												>
+													<span class="map-tooltip__label">{row.label}</span>
+													<span class="map-tooltip__value">{row.value}</span>
+												</div>
+											{/each}
+										</div>
+									</div>
+								{/if}
+							</div>
+						{/if}
+						</div>
+					</div>
 					</div>
 				</div>
 
-						<aside class="poc-stepper-side" aria-label="Map explanation steps">
+				<aside class="poc-stepper-side" aria-label="Map explanation steps">
 					<div class="poc-stepper-head">
 						<p class="poc-stepper-inline-kicker">Map walkthrough</p>
-						<p class="poc-stepper-inline-hint">Scroll down the page and the map will progressively add layers.</p>
+						<p class="poc-stepper-inline-hint">When you scroll here, the map adds one layer at a time.</p>
 					</div>
 					<div class="poc-stepper-inline-rail" aria-label="Map steps">
 						{#each stepContent as step, i (i)}
@@ -2376,6 +3212,7 @@
 								use:stepRef={i}
 								class="poc-stepper-card"
 								class:poc-stepper-card--active={revealStage === i}
+								class:poc-stepper-card--dense={guidedMode && (i === 2 || i === 3 || i === 8 || i === 9 || i === 10)}
 								data-step-index={i}
 							>
 								<div class="poc-stepper-card-top">
@@ -2385,13 +3222,186 @@
 										<span class="poc-stepper-pill-title">{step.title}</span>
 									</div>
 								</div>
-								<p class="poc-stepper-card-body">{step.body}</p>
+								<p class="poc-stepper-card-body">
+									{#if step.bodyHtml}
+										{@html step.bodyHtml}
+									{:else}
+										{step.body}
+									{/if}
+								</p>
+								{#if guidedMode && i === 0}
+									<div
+										use:focusWaypointRef={{ stage: 0, key: 'core_access' }}
+										class="poc-stepper-waypoint"
+									>
+										<p class="poc-stepper-waypoint__label">Scroll to focus on Boston, Cambridge, Quincy, and Revere.</p>
+									</div>
+								{/if}
+								{#if guidedMode && step.legend}
+									<p class="poc-stepper-card-note"><strong>How to read it:</strong> {step.legend}</p>
+								{/if}
+								{#if guidedMode && step.why}
+									<p class="poc-stepper-card-note"><strong>Why it matters:</strong> {step.why}</p>
+								{/if}
+								{#if guidedMode && i === 2 && guidedContrastExamples.length}
+									<div
+										use:focusWaypointRef={{ stage: 2, key: 'contrast_example' }}
+										class="poc-stepper-waypoint"
+									>
+										<p class="poc-stepper-waypoint__label">Scroll to focus on tract examples that already show this contrast.</p>
+									</div>
+									<div class="poc-stepper-examples" aria-label="Example tracts that show the contrast">
+										<p class="poc-stepper-examples-title">Example tracts that make the contrast more concrete</p>
+										{#each guidedContrastExamples as example (example.id)}
+											<button
+												type="button"
+												class="poc-stepper-example"
+												onclick={() => inspectGuidedExample(example.id)}
+											>
+												<div class="poc-stepper-example__head">
+													<span class="poc-stepper-example__label">{example.label}</span>
+													<span class="poc-stepper-example__cta">Show on map</span>
+												</div>
+												<p class="poc-stepper-example__note">{example.note}</p>
+												<div class="poc-stepper-example__metrics">
+													<span><strong>Growth:</strong> {d3.format('.1f')(example.growth)}%</span>
+													<span><strong>Transit access:</strong> {example.stops === 0 ? '0 stops' : `${d3.format(',.0f')(example.stops)} stops`}</span>
+													{#if example.income != null}
+														<span><strong>Median income:</strong> {d3.format('$,.0f')(example.income)}</span>
+													{/if}
+												</div>
+											</button>
+										{/each}
+									</div>
+								{/if}
+								{#if guidedMode && i === 3 && guidedMismatchExamples.length}
+									<div
+										use:focusWaypointRef={{ stage: 3, key: 'mismatch_example' }}
+										class="poc-stepper-waypoint"
+									>
+										<p class="poc-stepper-waypoint__label">Scroll to focus on mismatch tracts marked with red insight markers.</p>
+									</div>
+									<div class="poc-stepper-examples" aria-label="Mismatch examples highlighted on the map">
+										<p class="poc-stepper-examples-title">Examples of tracts where access and growth pull apart</p>
+										{#each guidedMismatchExamples as example (example.id)}
+											<div class="poc-stepper-example poc-stepper-example--static">
+												<div class="poc-stepper-example__head">
+													<span class="poc-stepper-example__label">{example.label}</span>
+													<span
+														class="poc-stepper-example__cta"
+														class:poc-stepper-example__cta--mismatch-ha={example.kindRank === 0}
+														class:poc-stepper-example__cta--mismatch-hg={example.kindRank === 1}
+													>
+														{example.kind}
+													</span>
+												</div>
+												<p class="poc-stepper-example__note">{example.note}</p>
+												<div class="poc-stepper-example__metrics">
+													<span><strong>Growth:</strong> {d3.format('.1f')(example.growth)}%</span>
+													<span><strong>Transit access:</strong> {example.stops === 0 ? '0 stops' : `${d3.format(',.0f')(example.stops)} stops`}</span>
+													{#if example.income != null}
+														<span><strong>Median income:</strong> {d3.format('$,.0f')(example.income)}</span>
+													{/if}
+												</div>
+												<div class="poc-stepper-example__actions">
+													<button
+														type="button"
+														class="poc-stepper-example__button"
+														onclick={() => inspectGuidedExample(example.id)}
+													>
+														Show on map
+													</button>
+												</div>
+											</div>
+										{/each}
+									</div>
+								{/if}
+								{#if guidedMode && i === 8 && guidedDevelopmentExamples.length}
+									<div class="poc-stepper-examples" aria-label="Notable TOD and non-TOD developments">
+										<p class="poc-stepper-examples-title">Scroll to see examples of individual developments and how they fit this pattern</p>
+									</div>
+								{/if}
+								{#if guidedMode && i === 9 && guidedStepTenExamples.length}
+									<div
+										use:focusWaypointRef={{ stage: 9, key: 'project_example' }}
+										class="poc-stepper-waypoint"
+									>
+										<p class="poc-stepper-waypoint__label">Scroll to focus on featured development examples.</p>
+									</div>
+									<div class="poc-stepper-examples" aria-label="Important developments tied to the argument">
+										<p class="poc-stepper-examples-title">Important developments that help explain the pattern</p>
+										{#each guidedStepTenExamples as example (example.id)}
+											<div class="poc-stepper-example">
+												<div class="poc-stepper-example__head">
+													<span class="poc-stepper-example__label">{example.label}</span>
+													<span class="poc-stepper-example__cta" class:poc-stepper-example__cta--tod={example.categoryTone === 'tod'} class:poc-stepper-example__cta--partial={example.categoryTone === 'partial'} class:poc-stepper-example__cta--nontod={example.categoryTone === 'nontod'}>{example.categoryLabel}</span>
+												</div>
+												<p class="poc-stepper-example__note">{example.note}</p>
+												<div class="poc-stepper-example__metrics">
+													<span><strong>Total units:</strong> {example.units == null ? '—' : d3.format(',.0f')(example.units)}</span>
+													<span><strong>Affordable units:</strong> {example.affordableUnits == null ? 'Not listed' : d3.format(',.0f')(example.affordableUnits || 0)}</span>
+												</div>
+												<div class="poc-stepper-example__actions">
+													<button
+														type="button"
+														class="poc-stepper-example__button"
+														disabled={example.showOnMapDisabled}
+														onclick={() => example.dev && inspectGuidedDevelopment(example.dev)}
+													>
+														Show on map
+													</button>
+												</div>
+											</div>
+										{/each}
+									</div>
+								{/if}
+								{#if guidedMode && i === 10}
+									<div class="poc-stepper-overlay-toggle" aria-label="Choose which outline layer to compare in the lower-income step">
+										<p class="poc-stepper-examples-title">Compare the lower-income view with either tract grouping or mismatch outlines</p>
+										<div class="poc-stepper-overlay-toggle__buttons" role="group" aria-label="Lower-income outline view">
+											<button
+												type="button"
+												class="poc-stepper-overlay-toggle__btn"
+												class:poc-stepper-overlay-toggle__btn--active={guidedLowerIncomeOverlay === 'cohort'}
+												onclick={() => (guidedLowerIncomeOverlay = 'cohort')}
+											>
+												TOD / non-TOD outlines
+											</button>
+											<button
+												type="button"
+												class="poc-stepper-overlay-toggle__btn"
+												class:poc-stepper-overlay-toggle__btn--active={guidedLowerIncomeOverlay === 'mismatch'}
+												onclick={() => (guidedLowerIncomeOverlay = 'mismatch')}
+											>
+												Mismatch outlines
+											</button>
+										</div>
+										<p class="poc-stepper-card-note">
+											{#if guidedLowerIncomeOverlay === 'cohort'}
+												<strong>What this shows:</strong> the orange and green outlines compare whether significant development in lower-income tracts has been more TOD-dominated or more non-TOD-dominated.
+											{:else}
+												<strong>What this shows:</strong> the purple mismatch outlines show where lower-income tracts sit inside the access-versus-growth disconnect, either as high-access/low-growth places or higher-growth/weaker-access places.
+											{/if}
+										</p>
+									</div>
+								{/if}
+								{#if guidedMode && step.prompt && i !== 2 && i !== 3 && i !== 8 && i !== 9}
+									<p class="poc-stepper-card-note"><strong>Try this:</strong> {step.prompt}</p>
+								{/if}
 							</section>
 						{/each}
 					</div>
 				</aside>
 			</div>
-			<p class="poc-map-zoom-hint">Scroll through the narrative steps · drag to pan · scroll or pinch to zoom</p>
+			<div class="poc-key-findings card-key" role="note" aria-label="Key findings summary">
+				<p class="poc-detail__kicker">Key findings</p>
+				<ul class="poc-map-callouts__list">
+					{#each keyFindings as c, i (i)}
+						<li>{c}</li>
+					{/each}
+				</ul>
+			</div>
+			<p class="poc-map-zoom-hint">Scroll through the walkthrough, drag to pan, and scroll or pinch to zoom.</p>
 		</div>
 	</div>
 </div>
@@ -2415,23 +3425,29 @@
 		min-height: 0;
 	}
 
-	.poc-stage-chip {
-		align-self: flex-start;
-		padding: 5px 9px;
-		border-radius: 999px;
-		background: color-mix(in srgb, var(--accent) 10%, var(--bg-card));
-		border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
-		font-size: 0.72rem;
-		font-weight: 700;
-		letter-spacing: 0.03em;
-		color: var(--text);
+	.poc-scrolly-shell {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
+		gap: 22px;
+		align-items: start;
+	}
+
+	.poc-scrolly-left {
+		display: grid;
+		gap: 6px;
+		min-width: 0;
+		min-height: 0;
+		position: sticky;
+		top: 10px;
+		align-self: start;
+		z-index: 1;
 	}
 
 	.poc-stepper-side {
 		display: grid;
-		gap: 14px;
+		gap: 12px;
 		align-content: start;
-		padding-top: 12px;
+		padding-top: 2px;
 		min-width: 0;
 		position: relative;
 		z-index: 1;
@@ -2443,7 +3459,7 @@
 		z-index: 3;
 		display: grid;
 		gap: 4px;
-		padding: 12px 14px;
+		padding: 10px 12px;
 		border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
 		border-radius: var(--radius-sm);
 		background: color-mix(in srgb, var(--bg-card) 96%, white);
@@ -2469,10 +3485,10 @@
 
 	.poc-stepper-inline-rail {
 		display: grid;
-		gap: 16vh;
-		padding-top: 132px;
+		gap: 33vh;
+		padding-top: 8px;
 		/* Extra runway after step 3 so the page does not jump to the next section immediately */
-		padding-bottom: 32vh;
+		padding-bottom: calc(57vh + 108px);
 		isolation: isolate;
 	}
 
@@ -2481,7 +3497,7 @@
 		align-content: center;
 		gap: 12px;
 		width: 100%;
-		min-height: 58vh;
+		min-height: 84vh;
 		padding: 10px 0 0;
 		border-left: 2px solid color-mix(in srgb, var(--accent) 16%, var(--border));
 		padding-left: 18px;
@@ -2507,6 +3523,11 @@
 		border-bottom-color: color-mix(in srgb, var(--accent) 24%, var(--border));
 		opacity: 1;
 		transform: translateY(0);
+	}
+
+	.poc-stepper-card--dense {
+		align-content: start;
+		padding-top: 14px;
 	}
 
 	.poc-stepper-card-top {
@@ -2562,6 +3583,258 @@
 		color: var(--text-muted);
 	}
 
+	.poc-inline-line {
+		font-weight: 700;
+	}
+
+	.poc-inline-line--red {
+		color: #da291c;
+	}
+
+	.poc-inline-line--orange {
+		color: #ed8b00;
+	}
+
+	.poc-inline-line--blue {
+		color: #003da5;
+	}
+
+	.poc-inline-line--green {
+		color: #00843d;
+	}
+
+	.poc-inline-line--commuter {
+		color: #7c3f98;
+	}
+
+	.poc-stepper-card-note {
+		margin: 0;
+		max-width: 24ch;
+		font-size: 0.8rem;
+		line-height: 1.55;
+		color: var(--text-muted);
+	}
+
+	.poc-stepper-card-note strong {
+		color: var(--text);
+	}
+
+	.poc-stepper-waypoint {
+		margin-top: 0.85rem;
+		padding: 0.72rem 0.82rem;
+		border: 1px dashed color-mix(in srgb, var(--accent) 32%, var(--border));
+		border-radius: 14px;
+		background: color-mix(in srgb, var(--accent) 6%, var(--bg-card));
+	}
+
+	.poc-stepper-waypoint__label {
+		margin: 0;
+		font-size: 0.78rem;
+		font-weight: 700;
+		line-height: 1.45;
+		color: var(--text);
+	}
+
+	.poc-stepper-examples {
+		display: grid;
+		gap: 0.7rem;
+		margin-top: 0.8rem;
+	}
+
+	.poc-stepper-overlay-toggle {
+		display: grid;
+		gap: 0.7rem;
+		margin-top: 0.8rem;
+		padding: 0.78rem 0.84rem;
+		border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+		border-radius: 14px;
+		background: color-mix(in srgb, var(--accent) 4%, var(--bg-card));
+	}
+
+	.poc-stepper-overlay-toggle__buttons {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.45rem;
+	}
+
+	.poc-stepper-overlay-toggle__btn {
+		border: 1px solid color-mix(in srgb, var(--border) 90%, var(--text-muted));
+		border-radius: 999px;
+		background: var(--bg-card);
+		color: var(--text);
+		padding: 0.42rem 0.72rem;
+		font-size: 0.7rem;
+		font-weight: 700;
+		line-height: 1.2;
+		cursor: pointer;
+		transition:
+			background 120ms ease,
+			border-color 120ms ease,
+			color 120ms ease,
+			transform 120ms ease;
+	}
+
+	.poc-stepper-overlay-toggle__btn:hover,
+	.poc-stepper-overlay-toggle__btn:focus-visible {
+		border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+		background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+		outline: none;
+		transform: translateY(-1px);
+	}
+
+	.poc-stepper-overlay-toggle__btn--active {
+		border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+		background: color-mix(in srgb, var(--accent) 13%, var(--bg-card));
+		color: color-mix(in srgb, var(--accent) 86%, black 14%);
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+	}
+
+	.poc-stepper-examples-title {
+		margin: 0;
+		max-width: 24ch;
+		font-size: 0.82rem;
+		font-weight: 700;
+		line-height: 1.45;
+		color: var(--text);
+	}
+
+	.poc-stepper-example {
+		display: grid;
+		gap: 0.42rem;
+		width: 100%;
+		padding: 0.78rem 0.84rem;
+		border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+		border-radius: 14px;
+		background: color-mix(in srgb, var(--bg-card) 94%, white 6%);
+		text-align: left;
+		cursor: pointer;
+		transition:
+			border-color 120ms ease,
+			box-shadow 120ms ease,
+			transform 120ms ease;
+	}
+
+	.poc-stepper-example:hover,
+	.poc-stepper-example:focus-visible {
+		border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+		box-shadow: 0 8px 18px rgba(18, 30, 51, 0.08);
+		transform: translateY(-1px);
+	}
+
+	.poc-stepper-example--static {
+		cursor: default;
+	}
+
+	.poc-stepper-example--static:hover,
+	.poc-stepper-example--static:focus-visible {
+		border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+		box-shadow: none;
+		transform: none;
+	}
+
+	.poc-stepper-example__head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.6rem;
+	}
+
+	.poc-stepper-example__label {
+		font-size: 0.84rem;
+		font-weight: 700;
+		line-height: 1.35;
+		color: var(--text);
+	}
+
+	.poc-stepper-example__cta {
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--accent);
+	}
+
+	.poc-stepper-example__cta--mismatch-ha,
+	.poc-stepper-example__cta--mismatch-hg {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.28rem 0.5rem;
+		border-radius: 999px;
+		letter-spacing: 0.02em;
+		white-space: nowrap;
+	}
+
+	.poc-stepper-example__cta--mismatch-ha {
+		color: #5b4bc4;
+		background: color-mix(in srgb, #8a78e0 16%, white);
+		border: 2px solid #8a78e0;
+	}
+
+	.poc-stepper-example__cta--mismatch-hg {
+		color: #7b68cc;
+		background: color-mix(in srgb, #c4b5f0 16%, white);
+		border: 2px dashed #c4b5f0;
+	}
+
+	.poc-stepper-example__cta--tod {
+		color: var(--accent);
+	}
+
+	.poc-stepper-example__cta--partial {
+		color: #2563eb;
+	}
+
+	.poc-stepper-example__cta--nontod {
+		color: var(--warning);
+	}
+
+	.poc-stepper-example__note {
+		margin: 0;
+		max-width: 24ch;
+		font-size: 0.77rem;
+		line-height: 1.45;
+		color: var(--text-muted);
+	}
+
+	.poc-stepper-example__metrics {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem 0.7rem;
+		max-width: 25ch;
+		font-size: 0.72rem;
+		line-height: 1.45;
+		color: var(--text-muted);
+	}
+
+	.poc-stepper-example__actions {
+		display: flex;
+		justify-content: flex-start;
+		margin-top: 0.1rem;
+	}
+
+	.poc-stepper-example__button {
+		padding: 0.42rem 0.7rem;
+		border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+		border-radius: 999px;
+		background: color-mix(in srgb, white 76%, var(--accent) 24%);
+		color: var(--accent-strong);
+		font-size: 0.74rem;
+		font-weight: 700;
+		line-height: 1;
+		cursor: pointer;
+		transition:
+			background 120ms ease,
+			border-color 120ms ease,
+			transform 120ms ease;
+	}
+
+	.poc-stepper-example__button:hover,
+	.poc-stepper-example__button:focus-visible {
+		background: color-mix(in srgb, white 60%, var(--accent) 40%);
+		border-color: color-mix(in srgb, var(--accent) 56%, var(--border));
+		transform: translateY(-1px);
+	}
+
 	/* Transit toggles ~1/4 width; text legend ~3/4 on wide viewports */
 	.poc-legend-row {
 		display: flex;
@@ -2573,88 +3846,13 @@
 
 	.poc-control-stack {
 		display: grid;
-		gap: 8px;
-	}
-
-	.poc-supp-grid {
-		display: grid;
-		gap: 8px;
-		margin-top: 8px;
-	}
-
-	.poc-supp-card {
-		display: grid;
-		gap: 8px;
-		padding: 10px 12px;
-	}
-
-	.poc-supp-title {
-		margin: 0;
-		font-size: 1.05rem;
-		font-weight: 800;
-		color: var(--text);
-	}
-
-	.poc-supp-chart {
-		width: 100%;
-		min-height: 330px;
-	}
-
-	.poc-supp-chart :global(svg) {
-		width: 100%;
-		height: auto;
-		display: block;
-	}
-
-	.poc-supp-chart :global(.legend) {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem 0.9rem;
-		align-items: center;
-		color: var(--text-muted);
-	}
-
-	.poc-supp-chart :global(.legend-item) {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.45rem;
-	}
-
-	.poc-supp-chart :global(.swatch) {
-		width: 0.85rem;
-		height: 0.85rem;
-		border-radius: 999px;
-		display: inline-block;
-	}
-
-	.poc-supp-chart :global(.legend-scale) {
-		display: inline-flex;
-		gap: 0.6rem;
-		align-items: center;
-	}
-
-	.poc-supp-chart :global(.legend-ramp) {
-		display: inline-flex;
-		gap: 0.25rem;
-	}
-
-	.poc-supp-chart :global(.legend-ramp span) {
-		width: 1.8rem;
-		height: 0.95rem;
-		border-radius: 999px;
-	}
-
-	.poc-supp-chart :global(.chart-note),
-	.poc-supp-chart :global(.empty) {
-		margin: 0;
-		color: var(--text-muted);
-		font-size: 0.86rem;
-		line-height: 1.4;
+		gap: 5px;
+		margin-bottom: 0;
 	}
 
 	.poc-side-cards {
 		display: grid;
-		gap: 8px;
+		gap: 5px;
 		align-content: start;
 	}
 
@@ -2687,26 +3885,52 @@
 
 		.poc-compare {
 			grid-column: 2;
+			grid-row: 1;
 		}
 
-		.poc-supp-grid {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
+		.poc-insight {
+			grid-column: 1;
+			grid-row: 2;
 		}
+
 	}
 
 	@media (max-width: 900px) {
+		.poc-scrolly-shell {
+			grid-template-columns: 1fr;
+			gap: 16px;
+		}
+
 		.map-wrap {
 			grid-template-columns: 1fr;
+		}
+
+		.poc-scrolly-left,
+		.map-visual-column {
+			gap: 6px;
+		}
+
+		.poc-scrolly-left {
+			position: relative;
+			top: auto;
+		}
+
+		.poc-control-stack {
+			margin-bottom: 8px;
 		}
 
 		.map-left-column {
 			position: relative;
 			top: auto;
+			grid-column: auto;
+			grid-row: auto;
 		}
 
 		.map-main {
 			position: relative;
 			top: auto;
+			grid-column: auto;
+			grid-row: auto;
 		}
 
 		.map-widget__controls {
@@ -2717,6 +3941,10 @@
 		.poc-stepper-head {
 			position: relative;
 			top: auto;
+		}
+
+		.poc-stepper-side {
+			order: 2;
 		}
 
 		.poc-stepper-inline-rail {
@@ -2733,13 +3961,13 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		background: var(--bg-card);
-		padding: 2px 5px 4px;
+		padding: 1px 3px 2px;
 		margin: 0;
 	}
 
 	.poc-spotlight {
 		display: grid;
-		gap: 8px;
+		gap: 5px;
 		align-content: start;
 		min-height: 100%;
 	}
@@ -2750,27 +3978,27 @@
 	}
 
 	.poc-methods--lead {
-		margin-bottom: 8px;
-		padding: 12px 14px;
+		margin-bottom: 6px;
+		padding: 10px 12px;
 	}
 
 	.poc-methods--encoding {
-		margin-bottom: 8px;
-		padding: 12px 14px;
+		margin-bottom: 6px;
+		padding: 10px 12px;
 		border-color: color-mix(in srgb, var(--border) 92%, var(--text-muted));
 	}
 
 	.poc-methods__list--encoding {
-		margin-top: 6px;
+		margin-top: 8px;
 	}
 
 	.poc-methods__list--encoding li {
-		margin-bottom: 8px;
+		margin-bottom: 10px;
 	}
 
 	.poc-methods--assumptions {
-		margin-bottom: 10px;
-		padding: 12px 14px;
+		margin-bottom: 8px;
+		padding: 10px 12px;
 		border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
 		background: color-mix(in srgb, var(--accent) 4%, var(--bg-card));
 	}
@@ -2785,8 +4013,8 @@
 
 	.poc-methods__text {
 		margin: 0;
-		font-size: 0.9rem;
-		line-height: 1.6;
+		font-size: 0.84rem;
+		line-height: 1.48;
 		color: var(--text-muted);
 	}
 
@@ -2794,9 +4022,9 @@
 		margin: 0;
 		padding-left: 1.1rem;
 		display: grid;
-		gap: 0.35rem;
-		font-size: 0.82rem;
-		line-height: 1.45;
+		gap: 0.26rem;
+		font-size: 0.76rem;
+		line-height: 1.35;
 		color: var(--text-muted);
 	}
 
@@ -2834,7 +4062,7 @@
 	.poc-spotlight__buttons {
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 6px;
+		gap: 4px;
 	}
 
 	.poc-spotlight__button {
@@ -2842,12 +4070,12 @@
 		border-radius: 12px;
 		background: var(--bg-card);
 		color: var(--text);
-		padding: 0.58rem 0.6rem;
-		font-size: 0.74rem;
+		padding: 0.38rem 0.44rem;
+		font-size: 0.67rem;
 		font-weight: 700;
-		line-height: 1.25;
+		line-height: 1.2;
 		text-align: left;
-		min-height: 76px;
+		min-height: 48px;
 		transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
 	}
 
@@ -2880,8 +4108,8 @@
 
 	.poc-spotlight__summary {
 		display: grid;
-		gap: 6px;
-		padding: 8px 10px;
+		gap: 5px;
+		padding: 6px 8px;
 		border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
 		border-radius: 12px;
 		background: color-mix(in srgb, var(--accent) 5%, var(--bg-card));
@@ -2889,22 +4117,22 @@
 
 	.poc-spotlight__summary-title {
 		margin: 0;
-		font-size: 0.82rem;
+		font-size: 0.78rem;
 		font-weight: 700;
 		color: var(--text);
 	}
 
 	.poc-spotlight__summary-copy {
 		margin: 0;
-		font-size: 0.71rem;
-		line-height: 1.45;
+		font-size: 0.64rem;
+		line-height: 1.25;
 		color: var(--text-muted);
 	}
 
 	.poc-spotlight__stats {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 8px 12px;
+		gap: 5px 8px;
 	}
 
 	.poc-spotlight__stat-label {
@@ -2919,14 +4147,14 @@
 	.poc-spotlight__stat-value {
 		display: block;
 		margin-top: 2px;
-		font-size: 0.82rem;
+		font-size: 0.72rem;
 		font-weight: 700;
 		color: var(--text);
 	}
 
 	.poc-detail {
 		display: grid;
-		gap: 6px;
+		gap: 4px;
 		align-content: start;
 	}
 
@@ -2957,7 +4185,7 @@
 		display: flex;
 		flex-wrap: wrap;
 		justify-content: flex-end;
-		gap: 6px;
+		gap: 5px;
 	}
 
 	.poc-detail__btn {
@@ -2965,8 +4193,8 @@
 		border-radius: 999px;
 		background: color-mix(in srgb, var(--accent) 10%, var(--bg-card));
 		color: var(--text);
-		padding: 0.3rem 0.6rem;
-		font-size: 0.68rem;
+		padding: 0.26rem 0.52rem;
+		font-size: 0.64rem;
 		font-weight: 700;
 	}
 
@@ -2977,8 +4205,8 @@
 
 	.poc-detail__summary {
 		margin: 0;
-		font-size: 0.7rem;
-		line-height: 1.4;
+		font-size: 0.63rem;
+		line-height: 1.22;
 		color: var(--text-muted);
 	}
 
@@ -2996,26 +4224,26 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 8px;
+		gap: 6px;
 	}
 
 	.poc-detail__primary {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 8px;
+		gap: 6px;
 	}
 
 	.poc-detail__hero {
 		display: grid;
 		gap: 2px;
-		padding: 6px 8px;
+		padding: 5px 7px;
 		border-radius: 10px;
 		background: color-mix(in srgb, var(--accent) 7%, var(--bg-card));
 		border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
 	}
 
 	.poc-detail__hero-value {
-		font-size: 1rem;
+		font-size: 0.92rem;
 		font-weight: 800;
 		line-height: 1.1;
 		color: var(--text);
@@ -3024,7 +4252,7 @@
 	.poc-detail__stats {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 8px 10px;
+		gap: 6px 8px;
 	}
 
 	.poc-detail__stat-label {
@@ -3046,14 +4274,14 @@
 
 	.poc-compare {
 		display: grid;
-		gap: 10px;
+		gap: 6px;
 		align-content: start;
 		height: 100%;
 	}
 
 	.poc-insight {
 		display: grid;
-		gap: 8px;
+		gap: 5px;
 	}
 
 	.poc-insight__buttons {
@@ -3112,13 +4340,13 @@
 
 	.poc-compare__head {
 		display: grid;
-		gap: 8px;
+		gap: 5px;
 	}
 
 	.poc-compare__metric-tabs {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 6px;
+		gap: 4px;
 	}
 
 	.poc-compare__tab {
@@ -3126,8 +4354,8 @@
 		border-radius: 999px;
 		background: var(--bg-card);
 		color: var(--text);
-		padding: 0.32rem 0.62rem;
-		font-size: 0.69rem;
+		padding: 0.24rem 0.48rem;
+		font-size: 0.62rem;
 		font-weight: 700;
 	}
 
@@ -3138,24 +4366,24 @@
 
 	.poc-compare__bars {
 		display: grid;
-		gap: 10px;
+		gap: 6px;
 	}
 
 	.poc-compare__row {
 		display: grid;
 		grid-template-columns: minmax(0, 156px) minmax(0, 1fr) auto;
 		align-items: center;
-		gap: 10px;
+		gap: 6px;
 		border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--border));
 		border-radius: 12px;
-		padding: 0.55rem 0.7rem;
+		padding: 0.28rem 0.42rem;
 		background: color-mix(in srgb, var(--bg-card) 96%, white 4%);
 		color: inherit;
 		text-align: left;
 	}
 
 	.poc-compare__label {
-		font-size: 0.74rem;
+		font-size: 0.66rem;
 		font-weight: 700;
 		color: var(--text);
 	}
@@ -3163,7 +4391,7 @@
 	.poc-compare__track {
 		display: flex;
 		align-items: center;
-		height: 14px;
+		height: 10px;
 		border-radius: 999px;
 		background: color-mix(in srgb, var(--border) 72%, var(--bg-card));
 		overflow: hidden;
@@ -3201,7 +4429,7 @@
 	}
 
 	.poc-compare__value {
-		font-size: 0.75rem;
+		font-size: 0.67rem;
 		font-weight: 700;
 		color: var(--text);
 		font-variant-numeric: tabular-nums;
@@ -3271,15 +4499,15 @@
 		border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
 		background: color-mix(in srgb, var(--accent) 5%, var(--bg-card));
 		border-radius: var(--radius-sm);
-		padding: 5px 8px;
+		padding: 3px 6px;
 	}
 
 	.poc-map-key-compact {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-		font-size: 0.65rem;
-		line-height: 1.35;
+		gap: 3px;
+		font-size: 0.61rem;
+		line-height: 1.28;
 		color: var(--text-muted);
 	}
 
@@ -3359,10 +4587,10 @@
 	.poc-key-no-data {
 		display: flex;
 		align-items: flex-start;
-		gap: 6px;
+		gap: 5px;
 		margin: 0;
-		font-size: 0.6rem;
-		line-height: 1.35;
+		font-size: 0.56rem;
+		line-height: 1.25;
 		color: var(--text-muted);
 	}
 
@@ -3397,7 +4625,7 @@
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
-		gap: 4px;
+		gap: 3px;
 		min-width: 0;
 		flex: 1 1 12rem;
 	}
@@ -3409,7 +4637,7 @@
 	.poc-key-tract-bar {
 		display: block;
 		width: 100%;
-		max-width: 9rem;
+		max-width: 8rem;
 		height: 5px;
 		border-radius: 2px;
 		border: 1px solid var(--border);
@@ -3420,9 +4648,9 @@
 		display: flex;
 		justify-content: space-between;
 		width: 100%;
-		max-width: 9rem;
+		max-width: 8rem;
 		gap: 8px;
-		font-size: 0.62rem;
+		font-size: 0.58rem;
 		font-weight: 700;
 		line-height: 1.2;
 		color: var(--text-muted);
@@ -3504,11 +4732,11 @@
 	.poc-key-rings {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 3px 10px;
+		gap: 2px 8px;
 		margin: 0;
 		padding: 0;
 		list-style: none;
-		font-size: 0.62rem;
+		font-size: 0.58rem;
 	}
 
 	.poc-key-rings li {
@@ -3559,8 +4787,8 @@
 		display: flex;
 		align-items: flex-start;
 		gap: 0.45rem;
-		font-size: 0.78rem;
-		line-height: 1.35;
+		font-size: 0.66rem;
+		line-height: 1.16;
 		color: var(--text);
 		cursor: pointer;
 		user-select: none;
@@ -3574,17 +4802,17 @@
 	.poc-mismatch-mode {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 6px;
-		margin: 0 0 8px;
+		gap: 4px;
+		margin: 0 0 4px;
 	}
 
 	.poc-mismatch-mode__btn {
 		border: 1px solid var(--border);
 		background: color-mix(in srgb, var(--bg-card) 92%, transparent);
 		color: var(--text);
-		font-size: 0.68rem;
+		font-size: 0.6rem;
 		line-height: 1.25;
-		padding: 5px 8px;
+		padding: 3px 6px;
 		border-radius: 6px;
 		cursor: pointer;
 		text-align: left;
@@ -3606,48 +4834,66 @@
 	/* Dev outline swatches: grey fill so stroke semantics stay visible (map dots stay orange–green by MF). */
 	.poc-k-ring--dev-access,
 	.poc-k-ring--dev-noaccess {
-		background: #94a3b8;
+		background: #ffffff;
 	}
 
 	.poc-k-ring--dev-access {
-		border-color: #ffffff;
-		box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.38);
+		border-color: #00843d;
+		box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
 	}
 
 	.poc-k-ring--dev-noaccess {
-		border-color: rgba(15, 23, 42, 0.55);
+		border-color: #ed8b00;
 	}
 
 	.map-wrap {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
-		gap: 28px;
+		grid-template-columns: 1fr;
+		gap: 10px;
 		width: 100%;
 		background: transparent;
 		align-items: start;
+	}
+
+	.map-visual-column {
+		display: grid;
+		gap: 4px;
+		min-width: 0;
+		min-height: 0;
 	}
 
 	/* Legend + MBTA overlays + map move as one sticky stack so they stay visible while steps scroll */
 	.map-left-column {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 3px;
 		min-width: 0;
-		position: sticky;
-		top: 18px;
-		align-self: start;
-		z-index: 2;
+		position: relative;
+		top: auto;
+		align-self: stretch;
+		z-index: 1;
 	}
 
 	.map-main {
 		position: relative;
+		top: auto;
+		align-self: start;
+		z-index: 1;
 		min-width: 0;
 		display: grid;
-		gap: 8px;
+		gap: 3px;
+		margin-bottom: clamp(4px, 1.25vh, 10px);
 	}
 
 	.poc-map-callouts {
+		padding: 4px 6px;
+	}
+
+	.poc-key-findings {
+		margin-top: 8px;
 		padding: 8px 10px;
+		border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+		background: color-mix(in srgb, var(--accent) 6%, var(--bg-card));
 	}
 
 	.poc-map-callouts__list {
@@ -3707,7 +4953,7 @@
 	.map-root {
 		width: 100%;
 		max-width: 100%;
-		min-height: 300px;
+		min-height: 230px;
 	}
 
 	.map-tooltip {
@@ -3723,6 +4969,43 @@
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow);
 		pointer-events: none;
+	}
+
+	.map-tooltip__arrow {
+		position: absolute;
+		width: 12px;
+		height: 12px;
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		transform: rotate(45deg);
+	}
+
+	.map-tooltip__arrow--left {
+		left: -7px;
+		margin-top: -6px;
+		border-top: 0;
+		border-right: 0;
+	}
+
+	.map-tooltip__arrow--right {
+		right: -7px;
+		margin-top: -6px;
+		border-bottom: 0;
+		border-left: 0;
+	}
+
+	.map-tooltip__arrow--top {
+		top: -7px;
+		margin-left: -6px;
+		border-right: 0;
+		border-bottom: 0;
+	}
+
+	.map-tooltip__arrow--bottom {
+		bottom: -7px;
+		margin-left: -6px;
+		border-top: 0;
+		border-left: 0;
 	}
 
 	.map-tooltip__header {
@@ -3759,6 +5042,7 @@
 	.map-tooltip__badge {
 		display: inline-flex;
 		align-items: center;
+		flex-wrap: wrap;
 		padding: 3px 8px;
 		border-radius: 999px;
 		font-size: 0.68rem;
@@ -3829,6 +5113,8 @@
 		text-transform: uppercase;
 		letter-spacing: 0.03em;
 		color: var(--text-muted);
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 
 	.map-tooltip__primary-value {
@@ -3837,6 +5123,17 @@
 		line-height: 1.25;
 		text-align: right;
 		color: var(--text);
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
+	.map-tooltip__primary-row--stack {
+		grid-template-columns: 1fr;
+		gap: 3px;
+	}
+
+	.map-tooltip__primary-row--stack .map-tooltip__primary-value {
+		text-align: left;
 	}
 
 	.map-tooltip__details {
@@ -3869,6 +5166,8 @@
 		color: var(--text-muted);
 		font-size: 0.73rem;
 		line-height: 1.35;
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 
 	.map-tooltip__value {
@@ -3877,6 +5176,17 @@
 		font-weight: 600;
 		line-height: 1.35;
 		text-align: right;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
+	.map-tooltip__row--stack {
+		grid-template-columns: 1fr;
+		gap: 2px;
+	}
+
+	.map-tooltip__row--stack .map-tooltip__value {
+		text-align: left;
 	}
 
 	.poc-map-zoom-hint {
@@ -3893,14 +5203,14 @@
 	}
 
 	:global(.insight-marker__halo) {
-		fill: color-mix(in srgb, var(--warning) 26%, white 74%);
-		stroke: color-mix(in srgb, var(--warning) 58%, #1f2937);
+		fill: color-mix(in srgb, #ef4444 20%, white 80%);
+		stroke: color-mix(in srgb, #dc2626 62%, #1f2937);
 		stroke-width: 1.1;
 		vector-effect: non-scaling-stroke;
 	}
 
 	:global(.insight-marker__dot) {
-		fill: color-mix(in srgb, var(--warning) 86%, #7c2d12);
+		fill: color-mix(in srgb, #dc2626 88%, #7f1d1d);
 		stroke: #fff;
 		stroke-width: 1;
 		vector-effect: non-scaling-stroke;

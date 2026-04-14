@@ -89,6 +89,17 @@ export function linearRegression(points) {
 	return { slope, intercept };
 }
 
+function buildNiceSizeLegendValues(maxValue) {
+	if (!Number.isFinite(maxValue) || maxValue <= 0) return [100, 500, 1000];
+	const rough = [0.25, 0.6, 1].map((p) => maxValue * p);
+	return rough.map((value) => {
+		if (value <= 100) return Math.max(10, Math.round(value / 10) * 10);
+		if (value <= 500) return Math.max(50, Math.round(value / 50) * 50);
+		if (value <= 2000) return Math.max(100, Math.round(value / 100) * 100);
+		return Math.max(500, Math.round(value / 500) * 500);
+	});
+}
+
 /* ── Summary updater ─────────────────────────────────── */
 
 /**
@@ -144,21 +155,11 @@ export function renderMuniScatter(el, allRows, domainRows, state, callbacks) {
 			? 'Share of visible-window growth (%)'
 			: 'New units added in selected years';
 
-	const dominantLegend = addHtmlLegend(root, [
-		{ type: 'outline', color: 'var(--accent)', fill: '#ffffff', label: 'TOD-dominant municipality' },
-		{ type: 'outline', color: 'var(--warning)', fill: '#ffffff', label: 'Non-TOD-dominant municipality' },
-		{ type: 'outline', color: '#b7b0a3', fill: '#ffffff', label: 'No units yet in current window' }
-	]);
-	dominantLegend.append('span').attr('class', 'legend-item').text('Point size = affordable units added');
-	addRampLegend(root, 'Lower affordable share', 'Higher affordable share', incomePalette);
-
 	const width = root.node().clientWidth || 800;
 	const height = 460;
 	const margin = { top: 20, right: 20, bottom: 54, left: 66 };
 	const innerW = width - margin.left - margin.right;
 	const innerH = height - margin.top - margin.bottom;
-	const svg = root.append('svg').attr('viewBox', `0 0 ${width} ${height}`);
-	const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
 	const unitValues = domainRows.map(yDomainAccessor).filter(Number.isFinite).sort(d3.ascending);
 	const affordableValues = domainRows
 		.map((d) => d.affordableUnits)
@@ -180,6 +181,39 @@ export function renderMuniScatter(el, allRows, domainRows, state, callbacks) {
 		.range([0, innerW]);
 	const y = d3.scaleLinear().domain([0, yMax]).nice().range([innerH, 0]).clamp(true);
 	const r = d3.scaleSqrt().domain([0, rMax]).range([5, 22]).clamp(true);
+	const sizeLegendVals = [...new Set(buildNiceSizeLegendValues(rMax))];
+
+	const sizeLegend = root
+		.append('div')
+		.attr('class', 'chart-note')
+		.style('display', 'flex')
+		.style('align-items', 'center')
+		.style('gap', '16px')
+		.style('flex-wrap', 'wrap')
+		.style('margin-top', '4px')
+		.style('margin-bottom', '10px');
+
+	sizeLegend.append('span').style('font-weight', '600').text('Point size = affordable units added');
+	const sizeItems = sizeLegend.append('div').style('display', 'flex').style('gap', '18px').style('align-items', 'flex-end');
+	for (const v of sizeLegendVals) {
+		const item = sizeItems.append('div').style('display', 'grid').style('justify-items', 'center').style('gap', '4px');
+		item
+			.append('span')
+			.style('display', 'inline-block')
+			.style('width', `${Math.max(8, r(v) * 2)}px`)
+			.style('height', `${Math.max(8, r(v) * 2)}px`)
+			.style('border-radius', '999px')
+			.style('background', '#9fb6d8')
+			.style('border', '2px solid #5e6573');
+		item.append('span').text(d3.format(',.0f')(v));
+	}
+
+	const dominantLegend = addHtmlLegend(root, [
+		{ type: 'outline', color: 'var(--accent)', fill: '#ffffff', label: 'TOD-dominant municipality' },
+		{ type: 'outline', color: 'var(--warning)', fill: '#ffffff', label: 'Non-TOD-dominant municipality' },
+		{ type: 'outline', color: '#b7b0a3', fill: '#ffffff', label: 'No units yet in current window' }
+	]);
+	addRampLegend(root, 'Lower affordable share', 'Higher affordable share', incomePalette);
 
 	root
 		.append('div')
@@ -187,9 +221,12 @@ export function renderMuniScatter(el, allRows, domainRows, state, callbacks) {
 		.style('margin-bottom', '10px')
 		.text(
 			state.growthScale === 'share'
-				? 'Linear y-axis, fixed at share of visible-window growth. Use this mode to see which municipalities capture the growth mix.'
-				: `Linear y-axis, fixed over time. The chart is zoomed to the main municipal range through about ${d3.format(',.0f')(yMax)} units.`
+				? 'The dashed gray lines mark the regional averages on each axis. Use them to see which municipalities sit above or below the typical lower-income share and the typical share of visible-window growth.'
+				: `The dashed gray lines mark the regional averages on each axis. The chart is zoomed to the main municipal range through about ${d3.format(',.0f')(yMax)} units.`
 		);
+
+	const svg = root.append('svg').attr('viewBox', `0 0 ${width} ${height}`);
+	const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
 
 	const tooltip = makeTooltip(root);
 
@@ -797,6 +834,131 @@ export function renderMuniAffordabilityComposition(el, projectRows, state) {
 		.attr('height', (d) => yScale(d.affordableShare) - yScale(1))
 		.attr('fill', '#d5b08c')
 		.attr('rx', 4);
+}
+
+export function renderMuniAffordableTrend(el, projectRows, state) {
+	const root = d3.select(el);
+	root.selectAll('*').remove();
+	if (!projectRows.length) {
+		root.append('div').attr('class', 'empty').text('Change filters to see affordable-share trends over time.');
+		return;
+	}
+
+	const baseSeries = d3.range(state.yearStart, state.yearEnd + 1).map((year) => {
+		const rows = projectRows.filter((d) => d.year === year);
+		const total = d3.sum(rows, (d) => d.units);
+		const affordableUnits = d3.sum(rows, (d) => d.affordableUnits);
+		return {
+			year,
+			total,
+			affordableShare: total ? affordableUnits / total : 0
+		};
+	});
+
+	const series = baseSeries.map((d, i, arr) => {
+		const window = arr.slice(Math.max(0, i - 1), Math.min(arr.length, i + 2)).filter((v) => v.total > 0);
+		return {
+			...d,
+			smoothedShare: window.length ? d3.mean(window, (v) => v.affordableShare) : d.affordableShare
+		};
+	});
+
+	const latest = [...series].reverse().find((d) => d.total > 0);
+	if (latest) {
+		root
+			.append('div')
+			.attr('class', 'chart-note')
+			.style('margin-bottom', '8px')
+			.text(`${latest.year}: ${d3.format('.0%')(latest.affordableShare)} of new units are listed as affordable`);
+	}
+
+	const width = root.node().clientWidth || 720;
+	const height = 320;
+	const margin = { top: 18, right: 28, bottom: 40, left: 54 };
+	const innerW = width - margin.left - margin.right;
+	const innerH = height - margin.top - margin.bottom;
+	const svg = root.append('svg').attr('viewBox', `0 0 ${width} ${height}`);
+	const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+	const x = d3.scaleLinear().domain(d3.extent(series, (d) => d.year)).range([0, innerW]);
+	const yMax = Math.max(0.4, d3.max(series, (d) => d.smoothedShare || 0) || 0.4);
+	const y = d3.scaleLinear().domain([0, yMax]).nice().range([innerH, 0]);
+
+	g.append('line')
+		.attr('x1', 0)
+		.attr('x2', innerW)
+		.attr('y1', y(0.2))
+		.attr('y2', y(0.2))
+		.attr('stroke', '#b8b2a7')
+		.attr('stroke-width', 1.2)
+		.attr('stroke-dasharray', '5 4');
+
+	g.append('text')
+		.attr('x', innerW)
+		.attr('y', y(0.2) - 8)
+		.attr('text-anchor', 'end')
+		.attr('fill', '#6b7280')
+		.attr('font-size', 11)
+		.text('20% reference line');
+
+	g.append('g')
+		.attr('transform', `translate(0,${innerH})`)
+		.call(d3.axisBottom(x).ticks(6).tickFormat(d3.format('d')));
+
+	g.append('g')
+		.call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%')));
+
+	const area = d3
+		.area()
+		.x((d) => x(d.year))
+		.y0(innerH)
+		.y1((d) => y(d.smoothedShare))
+		.curve(d3.curveMonotoneX);
+
+	const line = d3
+		.line()
+		.x((d) => x(d.year))
+		.y((d) => y(d.smoothedShare))
+		.curve(d3.curveMonotoneX);
+
+	g.append('path')
+		.datum(series)
+		.attr('fill', '#d9d7f8')
+		.attr('opacity', 0.8)
+		.attr('d', area);
+
+	g.append('path')
+		.datum(series)
+		.attr('fill', 'none')
+		.attr('stroke', '#6f58c9')
+		.attr('stroke-width', 3)
+		.attr('d', line);
+
+	g.selectAll('.afford-dot')
+		.data(series.filter((d) => d.total > 0))
+		.join('circle')
+		.attr('class', 'afford-dot')
+		.attr('cx', (d) => x(d.year))
+		.attr('cy', (d) => y(d.affordableShare))
+		.attr('r', 3.25)
+		.attr('fill', '#6f58c9')
+		.attr('opacity', 0.45);
+
+	if (latest) {
+		g.append('circle')
+			.attr('cx', x(latest.year))
+			.attr('cy', y(latest.smoothedShare))
+			.attr('r', 5)
+			.attr('fill', '#6f58c9');
+
+		g.append('text')
+			.attr('x', x(latest.year))
+			.attr('y', y(latest.smoothedShare) - 12)
+			.attr('text-anchor', 'middle')
+			.attr('fill', '#1f2430')
+			.attr('font-size', 11)
+			.attr('font-weight', 700)
+			.text(d3.format('.0%')(latest.affordableShare));
+	}
 }
 
 /* ── Growth capture ──────────────────────────────────── */
