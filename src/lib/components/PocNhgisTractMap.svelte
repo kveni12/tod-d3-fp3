@@ -509,26 +509,19 @@
 		if (!containerEl) return;
 		const rowByGj = new Map((nhgisRows ?? []).map((r) => [r.gisjoin, r]));
 		const layer = d3.select(containerEl).select('.tract-layer');
-
-		const sortByTier = (na, nb) => {
+		const nodes = layer.selectAll('g.tract-g').nodes();
+		if (nodes.length === 0) return;
+		nodes.sort((na, nb) => {
 			const da = d3.select(na).datum();
 			const db = d3.select(nb).datum();
 			const ra = tractTierRankFromRow(rowByGj.get(da.properties?.gisjoin));
 			const rb = tractTierRankFromRow(rowByGj.get(db.properties?.gisjoin));
 			if (ra !== rb) return ra - rb;
 			return String(da.properties?.gisjoin ?? '').localeCompare(String(db.properties?.gisjoin ?? ''));
-		};
-
-		// Reorder both layers identically so the stroke/fill pairing
-		// stays visually consistent.
-		for (const cls of ['path.tract-stroke', 'path.tract-poly']) {
-			const nodes = layer.selectAll(cls).nodes();
-			if (nodes.length === 0) continue;
-			nodes.sort(sortByTier);
-			const parent = nodes[0].parentNode;
-			if (!parent) continue;
-			for (const n of nodes) parent.appendChild(n);
-		}
+		});
+		const parent = nodes[0].parentNode;
+		if (!parent) return;
+		for (const n of nodes) parent.appendChild(n);
 	}
 
 	let mapCanvasLeft = 0;
@@ -957,17 +950,21 @@
 			.style('paint-order', 'stroke')
 			.style('pointer-events', 'none');
 
-		// Two-layer "inside stroke" technique: a bottom stroke-bearing
-		// sub-group, then a fill-only sub-group on top that masks the
-		// outer half of each stroke.  The result is strokes that appear
-		// entirely inside each tract, eliminating overlap at shared edges.
+		// Per-tract <g> inside-stroke technique.  Each tract is a group
+		// containing a stroke path (bottom) and a fill-only path (top).
+		// The fill covers the outer half of the stroke, producing a true
+		// inside stroke.  Opacity is set on the <g> so both children
+		// composite at full opacity internally (the fill mask stays
+		// opaque within the group) even when the group is dimmed.
 		const tractGroup = zoomLayer.append('g').attr('class', 'tract-layer');
 
-		// Bottom sub-group: stroke + fill (stroke extends both ways).
-		tractGroup.append('g').attr('class', 'tract-stroke-group')
-			.selectAll('path.tract-stroke')
+		const tractGs = tractGroup
+			.selectAll('g.tract-g')
 			.data(sortedFeatures, (d) => d.properties?.gisjoin)
-			.join('path')
+			.join('g')
+			.attr('class', 'tract-g');
+
+		tractGs.append('path')
 			.attr('class', 'tract-stroke')
 			.attr('vector-effect', 'non-scaling-stroke')
 			.attr('d', path)
@@ -976,13 +973,7 @@
 			.attr('stroke-width', 1)
 			.style('pointer-events', 'none');
 
-		// Top sub-group: fill-only duplicate that covers the outer half
-		// of the stroke from the bottom sub-group.  Receives pointer
-		// events so hover / click behave identically to before.
-		tractGroup.append('g').attr('class', 'tract-fill-group')
-			.selectAll('path.tract-poly')
-			.data(sortedFeatures, (d) => d.properties?.gisjoin)
-			.join('path')
+		tractGs.append('path')
 			.attr('class', 'tract-poly')
 			.attr('vector-effect', 'non-scaling-stroke')
 			.attr('d', path)
@@ -1152,8 +1143,15 @@
 
 		const sel = d3.select(containerEl);
 
-		// Bottom layer: carries the stroke (inner half only, because the
-		// fill-mask layer on top covers the outer half).
+		// Opacity lives on the per-tract <g> so the fill-mask composites
+		// correctly even when the group is dimmed.
+		sel.selectAll('g.tract-g')
+			.transition()
+			.duration(450)
+			.ease(d3.easeCubicInOut)
+			.attr('opacity', computeOpacity);
+
+		// Stroke sub-path (bottom of each group).
 		sel.selectAll('path.tract-stroke')
 			.transition()
 			.duration(450)
@@ -1176,8 +1174,7 @@
 				const id = d.properties?.gisjoin;
 				const row = rowByGj.get(id);
 				const dc = row?.devClass;
-				// 2× desired visible width: the fill-mask layer covers the
-				// outer half, leaving only the inner half visible.
+				// 2× desired visible width: the fill-mask covers the outer half.
 				if (showMismatchOutlines() && effectiveMismatchIds.has(id)) {
 					return (mismatchKind(id) === 'ha_lg' ? MISMATCH_W_HA : MISMATCH_W_HG) * 2;
 				}
@@ -1197,17 +1194,14 @@
 					if (dc === 'tod_dominated' || dc === 'nontod_dominated') return 0.38;
 				}
 				return 1;
-			})
-			.attr('opacity', computeOpacity);
+			});
 
-		// Top layer: fill-only mask (no stroke) that covers the outer
-		// half of the stroke from the bottom layer.
+		// Fill-mask sub-path (top of each group).
 		sel.selectAll('path.tract-poly')
 			.transition()
 			.duration(450)
 			.ease(d3.easeCubicInOut)
-			.attr('fill', computeFill)
-			.attr('opacity', computeOpacity);
+			.attr('fill', computeFill);
 
 		const svg = svgRef;
 		const legGroup = svg.select('.map-legend-group');
@@ -1576,7 +1570,11 @@
 			return vis ? 1 : NON_MISMATCH_DIM;
 		};
 
-		// Update the stroke layer (bottom).
+		// Opacity on the per-tract group.
+		selRoot.selectAll('g.tract-g')
+			.attr('opacity', computeSelOpacity);
+
+		// Stroke sub-path.
 		selRoot.selectAll('path.tract-stroke')
 			.attr('stroke', (d) => {
 				const id = d.properties?.gisjoin;
@@ -1598,7 +1596,7 @@
 				const id = d.properties?.gisjoin;
 				const row = rowByGj?.get(id);
 				const dc = row?.devClass;
-				// 2× desired visual width: the fill-mask layer covers the outer half.
+				// 2× desired visual width: the fill-mask covers the outer half.
 				if (id === effectiveHoveredId) return dc === 'minimal' ? 4 : 7.2;
 				if (selectedSet.has(id)) return dc === 'minimal' ? 3.4 : 6;
 				if (showMismatchOutlines() && effectiveMismatchIds.has(id)) {
@@ -1619,12 +1617,7 @@
 					if (dc === 'tod_dominated' || dc === 'nontod_dominated') return 0.38;
 				}
 				return 1;
-			})
-			.attr('opacity', computeSelOpacity);
-
-		// Update the fill-mask layer (top, no stroke).
-		selRoot.selectAll('path.tract-poly')
-			.attr('opacity', computeSelOpacity);
+			});
 	}
 
 	function showTractTooltip(id, x, y, anchor = null) {
@@ -1817,42 +1810,46 @@
 		pendingHoverId = null;
 	}
 
+	function commitHoverTooltip(id, x, y) {
+		if (!id || pinnedTractId) return;
+		showTractTooltip(id, x, y);
+		// Set the mismatch-cluster highlight only now (not on enter)
+		// so the opposite group doesn't fade while the user is still
+		// moving toward a tract.
+		const mk = id ? mismatchKind(id) : null;
+		hoveredMismatchCluster = mk && effectiveMismatchIds.has(id) ? mk : null;
+		// Clear pending state so subsequent mousemove tracks normally.
+		pendingHoverId = null;
+		pendingHoverPos = null;
+	}
+
 	function handleTractEnter(event, d) {
 		const id = d.properties?.gisjoin;
 		if (isTractDimmed(id)) return;
-		// While a tract is pinned, suppress all hover tooltips.
 		if (pinnedTractId) return;
 		panelState.setHovered(id);
-		const mk = id ? mismatchKind(id) : null;
-		hoveredMismatchCluster = mk && effectiveMismatchIds.has(id) ? mk : null;
-		// Start 200ms rest-debounce instead of showing immediately.
+		// Don't set hoveredMismatchCluster yet — wait for the debounce
+		// so the user sees the group-fade only after the tooltip appears.
 		cancelHoverRest();
 		pendingHoverId = id;
 		pendingHoverPos = { x: event.clientX, y: event.clientY };
 		hoverRestTimer = setTimeout(() => {
-			if (pendingHoverId === id && pendingHoverPos && !pinnedTractId) {
-				showTractTooltip(id, pendingHoverPos.x, pendingHoverPos.y);
-			}
+			commitHoverTooltip(id, pendingHoverPos?.x ?? event.clientX, pendingHoverPos?.y ?? event.clientY);
 			hoverRestTimer = null;
 		}, 200);
 	}
 
 	function handleMouseMove(event) {
-		// While a tract is pinned, don't update hover tooltip position.
 		if (pinnedTractId) return;
-		// If waiting for hover-rest, reset the timer with new position.
 		if (pendingHoverId) {
 			pendingHoverPos = { x: event.clientX, y: event.clientY };
 			if (hoverRestTimer) clearTimeout(hoverRestTimer);
 			hoverRestTimer = setTimeout(() => {
-				if (pendingHoverId && pendingHoverPos && !pinnedTractId) {
-					showTractTooltip(pendingHoverId, pendingHoverPos.x, pendingHoverPos.y);
-				}
+				commitHoverTooltip(pendingHoverId, pendingHoverPos?.x ?? event.clientX, pendingHoverPos?.y ?? event.clientY);
 				hoverRestTimer = null;
 			}, 200);
 			return;
 		}
-		// Tooltip already visible — track mouse.
 		if (tooltip.visible) {
 			tooltip = { ...tooltip, x: event.clientX, y: event.clientY };
 		}
@@ -2837,23 +2834,27 @@
 		lastAutoFocusedStage = focusKey;
 	});
 
+	// Track the previous reveal stage so we only react to actual changes,
+	// not to other $state dependencies read inside the block.
+	let prevRevealStageForPin = $state(0);
 	$effect(() => {
-		void revealStage;
-		if (!guidedMode) return;
-		// Clear any pinned tract / tooltip when the user scrolls to a new step.
+		const stage = revealStage;
+		if (!guidedMode) { prevRevealStageForPin = stage; return; }
+		const stageChanged = stage !== prevRevealStageForPin;
+		prevRevealStageForPin = stage;
+		if (!stageChanged) return;
+		// Clear pinned tract / tooltip when the user scrolls to a new step.
 		if (pinnedTractId) {
 			pinnedTractId = null;
 			pinnedTooltip = null;
 			panelState.clearSelection();
 		}
-		if (pinnedTooltipStage != null && revealStage !== pinnedTooltipStage) {
+		if (pinnedTooltipStage != null) {
 			tooltip = { ...tooltip, visible: false, anchorX: null, anchorY: null };
 			pinnedTooltipStage = null;
 			activeGuidedDevelopmentKey = null;
 			panelState.setHovered(null);
 		}
-		// If the currently hovered tract becomes dimmed due to the new
-		// stage, clear the hover state so it doesn't persist visually.
 		cancelHoverRest();
 		const hov = panelState.hoveredTract;
 		if (hov && isTractDimmed(hov)) {
