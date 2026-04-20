@@ -1015,7 +1015,12 @@ export function renderMuniGrowthCapture(el, projectRows, domainRows, state) {
 	const innerH = height - margin.top - margin.bottom;
 	const svg = root.append('svg').attr('viewBox', `0 0 ${width} ${height}`);
 	const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
-	const x = d3.scaleLinear().domain(d3.extent(series, (d) => d.year)).range([0, innerW]);
+	const x = d3
+		.scaleBand()
+		.domain(series.map((d) => String(d.year)))
+		.range([0, innerW])
+		.paddingInner(0.14)
+		.paddingOuter(0.04);
 	const yScale = d3.scaleLinear().domain([0, 1]).range([innerH, 0]);
 
 	g.append('g')
@@ -1024,7 +1029,12 @@ export function renderMuniGrowthCapture(el, projectRows, domainRows, state) {
 			d3
 				.axisBottom(x)
 				.ticks(Math.min(7, series.length))
-				.tickFormat(d3.format('d'))
+				.tickValues(
+					series
+						.filter((_, idx) => idx % Math.ceil(series.length / 7) === 0)
+						.map((d) => String(d.year))
+				)
+				.tickFormat((d) => d)
 		);
 	g.append('g').call(d3.axisLeft(yScale).ticks(5).tickFormat(d3.format('.0%')));
 
@@ -1036,54 +1046,49 @@ export function renderMuniGrowthCapture(el, projectRows, domainRows, state) {
 		.attr('stroke', '#b7b0a3')
 		.attr('stroke-dasharray', '4 4');
 
-	const area = d3
-		.area()
-		.x((d) => x(d.year))
-		.y0(innerH)
-		.y1((d) => yScale(d.highShare));
-	const line = d3
-		.line()
-		.x((d) => x(d.year))
-		.y((d) => yScale(d.highShare));
-	const lowLine = d3
-		.line()
-		.x((d) => x(d.year))
-		.y((d) => yScale(d.lowShare));
+	const groups = g
+		.selectAll('.growth-capture-bar')
+		.data(series)
+		.join('g')
+		.attr('class', 'growth-capture-bar')
+		.attr('transform', (d) => `translate(${x(String(d.year))},0)`);
 
-	g.append('path')
-		.datum(series)
-		.attr('fill', 'var(--accent-soft)')
-		.attr('fill-opacity', 0.85)
-		.attr('d', area);
-	g.append('path')
-		.datum(series)
-		.attr('fill', 'none')
-		.attr('stroke', 'var(--accent)')
-		.attr('stroke-width', 2.6)
-		.attr('d', line);
-	g.append('path')
-		.datum(series)
-		.attr('fill', 'none')
-		.attr('stroke', 'var(--blue-5)')
-		.attr('stroke-width', 2)
-		.attr('stroke-dasharray', '6 4')
-		.attr('d', lowLine);
-
-	g.append('text')
-		.attr('x', innerW - 4)
-		.attr('y', yScale(series[series.length - 1].highShare) - 8)
-		.attr('text-anchor', 'end')
+	groups
+		.append('rect')
+		.attr('x', 0)
+		.attr('y', (d) => yScale(d.highShare))
+		.attr('width', x.bandwidth())
+		.attr('height', (d) => innerH - yScale(d.highShare))
+		.attr('rx', 3)
 		.attr('fill', 'var(--accent)')
-		.attr('font-size', 11)
-		.attr('font-weight', 700)
-		.text('Higher vulnerability');
+		.attr('opacity', 0.92);
 
-	g.append('text')
-		.attr('x', innerW - 4)
-		.attr('y', yScale(series[series.length - 1].lowShare) + 14)
-		.attr('text-anchor', 'end')
+	groups
+		.append('rect')
+		.attr('x', 0)
+		.attr('y', 0)
+		.attr('width', x.bandwidth())
+		.attr('height', (d) => yScale(d.highShare))
+		.attr('rx', 3)
 		.attr('fill', 'var(--blue-5)')
-		.attr('font-size', 11)
-		.attr('font-weight', 700)
-		.text('Lower vulnerability');
+		.attr('opacity', 0.9);
+
+	groups
+		.append('title')
+		.text(
+			(d) =>
+				`${d.year}\nHigher-vulnerability municipalities: ${fmtPct1(d.highShare)}\nLower-vulnerability municipalities: ${fmtPct1(d.lowShare)}`
+		);
+
+	if (latest) {
+		const latestX = (x(String(latest.year)) ?? 0) + x.bandwidth() / 2;
+		g.append('text')
+			.attr('x', latestX)
+			.attr('y', yScale(latest.highShare) - 10)
+			.attr('text-anchor', 'middle')
+			.attr('fill', '#1f2430')
+			.attr('font-size', 11)
+			.attr('font-weight', 700)
+			.text(fmtPct(latest.highShare));
+	}
 }
