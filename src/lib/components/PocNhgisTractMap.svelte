@@ -3022,6 +3022,10 @@
 		return `${stage}_example:${id}`;
 	}
 
+	function guidedProjectFocusKey(stage, id) {
+		return `${stage}_project:${id}`;
+	}
+
 	$effect(() => {
 		void structuralKey;
 		void containerEl;
@@ -3166,6 +3170,14 @@
 		if (revealStage === 9 && guidedFocusDetail === 'project_example' && guidedStepTenFeatured?.dev) {
 			lastAutoFocusedStage = focusKey;
 			inspectGuidedDevelopment(guidedStepTenFeatured.dev);
+			return;
+		}
+		if (revealStage === 9 && guidedFocusDetail?.startsWith('9_project:')) {
+			const example = guidedStepTenExamples.find(
+				(item) => item.id === guidedFocusDetail.slice('9_project:'.length)
+			);
+			lastAutoFocusedStage = focusKey;
+			if (example?.dev) inspectGuidedDevelopment(example.dev);
 			return;
 		}
 		lastAutoFocusedStage = focusKey;
@@ -3906,24 +3918,37 @@
 									<div class="poc-stepper-examples" aria-label="Example tracts that show the contrast">
 										<p class="poc-stepper-examples-title">Example tracts that make the contrast more concrete</p>
 										{#each guidedContrastExamples as example (example.id)}
-											<button
-												type="button"
-												class="poc-stepper-example"
-												onclick={() => inspectGuidedExample(example.id)}
+											<div
+												use:focusWaypointRef={{ stage: 2, key: guidedExampleFocusKey(2, example.id) }}
+												class="poc-stepper-example-wrap"
 											>
-												<div class="poc-stepper-example__head">
-													<span class="poc-stepper-example__label">{example.label}</span>
-													<span class="poc-stepper-example__cta">Show on map</span>
+												<div
+													class="poc-stepper-example poc-stepper-example--static"
+													class:poc-stepper-example--active={guidedFocusDetail === guidedExampleFocusKey(2, example.id)}
+												>
+													<div class="poc-stepper-example__head">
+														<span class="poc-stepper-example__label">{example.label}</span>
+														<span class="poc-stepper-example__cta">Show on map</span>
+													</div>
+													<p class="poc-stepper-example__note">{example.note}</p>
+													<div class="poc-stepper-example__metrics">
+														<span><strong>Growth:</strong> {d3.format('.1f')(example.growth)}%</span>
+														<span><strong>Transit access:</strong> {example.stops === 0 ? '0 stops' : `${d3.format(',.0f')(example.stops)} stops`}</span>
+														{#if example.income != null}
+															<span><strong>Median income:</strong> {d3.format('$,.0f')(example.income)}</span>
+														{/if}
+													</div>
+													<div class="poc-stepper-example__actions">
+														<button
+															type="button"
+															class="poc-stepper-example__button"
+															onclick={() => inspectGuidedExample(example.id)}
+														>
+															Show on map
+														</button>
+													</div>
 												</div>
-												<p class="poc-stepper-example__note">{example.note}</p>
-												<div class="poc-stepper-example__metrics">
-													<span><strong>Growth:</strong> {d3.format('.1f')(example.growth)}%</span>
-													<span><strong>Transit access:</strong> {example.stops === 0 ? '0 stops' : `${d3.format(',.0f')(example.stops)} stops`}</span>
-													{#if example.income != null}
-														<span><strong>Median income:</strong> {d3.format('$,.0f')(example.income)}</span>
-													{/if}
-												</div>
-											</button>
+											</div>
 										{/each}
 									</div>
 								{/if}
@@ -3992,25 +4017,33 @@
 									<div class="poc-stepper-examples" aria-label="Important developments tied to the argument">
 										<p class="poc-stepper-examples-title">Important developments that help explain the pattern</p>
 										{#each guidedStepTenExamples as example (example.id)}
-											<div class="poc-stepper-example">
-												<div class="poc-stepper-example__head">
-													<span class="poc-stepper-example__label">{example.label}</span>
-													<span class="poc-stepper-example__cta" class:poc-stepper-example__cta--tod={example.categoryTone === 'tod'} class:poc-stepper-example__cta--partial={example.categoryTone === 'partial'} class:poc-stepper-example__cta--nontod={example.categoryTone === 'nontod'}>{example.categoryLabel}</span>
-												</div>
-												<p class="poc-stepper-example__note">{example.note}</p>
-												<div class="poc-stepper-example__metrics">
-													<span><strong>Total units:</strong> {example.units == null ? '—' : d3.format(',.0f')(example.units)}</span>
-													<span><strong>Affordable units:</strong> {example.affordableUnits == null ? 'Not listed' : d3.format(',.0f')(example.affordableUnits || 0)}</span>
-												</div>
-												<div class="poc-stepper-example__actions">
-													<button
-														type="button"
-														class="poc-stepper-example__button"
-														disabled={example.showOnMapDisabled}
-														onclick={() => example.dev && inspectGuidedDevelopment(example.dev)}
-													>
-														Show on map
-													</button>
+											<div
+												use:focusWaypointRef={{ stage: 9, key: guidedProjectFocusKey(9, example.id) }}
+												class="poc-stepper-example-wrap"
+											>
+												<div
+													class="poc-stepper-example poc-stepper-example--static"
+													class:poc-stepper-example--active={guidedFocusDetail === guidedProjectFocusKey(9, example.id)}
+												>
+													<div class="poc-stepper-example__head">
+														<span class="poc-stepper-example__label">{example.label}</span>
+														<span class="poc-stepper-example__cta" class:poc-stepper-example__cta--tod={example.categoryTone === 'tod'} class:poc-stepper-example__cta--partial={example.categoryTone === 'partial'} class:poc-stepper-example__cta--nontod={example.categoryTone === 'nontod'}>{example.categoryLabel}</span>
+													</div>
+													<p class="poc-stepper-example__note">{example.note}</p>
+													<div class="poc-stepper-example__metrics">
+														<span><strong>Total units:</strong> {example.units == null ? '—' : d3.format(',.0f')(example.units)}</span>
+														<span><strong>Affordable units:</strong> {example.affordableUnits == null ? 'Not listed' : d3.format(',.0f')(example.affordableUnits || 0)}</span>
+													</div>
+													<div class="poc-stepper-example__actions">
+														<button
+															type="button"
+															class="poc-stepper-example__button"
+															disabled={example.showOnMapDisabled}
+															onclick={() => example.dev && inspectGuidedDevelopment(example.dev)}
+														>
+															Show on map
+														</button>
+													</div>
 												</div>
 											</div>
 										{/each}
