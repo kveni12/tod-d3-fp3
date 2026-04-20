@@ -1770,7 +1770,7 @@
 	 */
 	function updateMapHoverCursors() {
 		if (!containerEl || !svgRef) return;
-		const hoverTooltips = !pinnedTractId && !pinnedDevKey;
+		const hoverTooltips = !guidedMode && !pinnedTractId && !pinnedDevKey;
 		const root = d3.select(containerEl);
 		root.selectAll('path.mbta-line').style('cursor', hoverTooltips ? 'pointer' : 'default');
 		root.selectAll('circle.mbta-stop').style('cursor', hoverTooltips ? 'pointer' : 'default');
@@ -2079,6 +2079,7 @@
 	}
 
 	function handleTractEnter(event, d) {
+		if (guidedMode) return;
 		const id = d.properties?.gisjoin;
 		if (isTractDimmed(id)) return;
 		if (pinnedTractId || pinnedDevKey) return;
@@ -2095,6 +2096,7 @@
 	}
 
 	function handleMouseMove(event) {
+		if (guidedMode) return;
 		if (pinnedTractId || pinnedDevKey) return;
 		if (pendingHoverId) {
 			pendingHoverPos = { x: event.clientX, y: event.clientY };
@@ -2111,6 +2113,7 @@
 	}
 
 	function handleTractLeave() {
+		if (guidedMode) return;
 		cancelHoverRest();
 		// Don't clear pinned tooltip on mouse leave.
 		if (!pinnedTractId && !pinnedDevKey) {
@@ -2194,6 +2197,7 @@
 	}
 
 	function handleStopEnter(event, d) {
+		if (guidedMode) return;
 		if (pinnedTractId || pinnedDevKey) return;
 		const routes = d.routes?.join(', ') || 'Unknown';
 		const modes = (d.modes ?? []).map((m) => transitModeUiLabel(m)).join(', ') || 'Unknown';
@@ -2214,6 +2218,7 @@
 	}
 
 	function handleLineEnter(event, d) {
+		if (guidedMode) return;
 		if (pinnedTractId || pinnedDevKey) return;
 		const props = d.properties ?? {};
 		const name = props.route_long_name || props.route_short_name || props.route_id || 'MBTA Route';
@@ -2293,6 +2298,7 @@
 	}
 
 	function handleDevEnter(event, d) {
+		if (guidedMode) return;
 		if (pinnedTractId || pinnedDevKey) return;
 		showDevelopmentTooltip(d, event.clientX, event.clientY);
 	}
@@ -3012,6 +3018,10 @@
 		}, 640);
 	}
 
+	function guidedExampleFocusKey(stage, id) {
+		return `${stage}_example:${id}`;
+	}
+
 	$effect(() => {
 		void structuralKey;
 		void containerEl;
@@ -3138,9 +3148,19 @@
 			inspectGuidedExample(guidedContrastFeatured.id);
 			return;
 		}
+		if (revealStage === 2 && guidedFocusDetail?.startsWith('2_example:')) {
+			lastAutoFocusedStage = focusKey;
+			inspectGuidedExample(guidedFocusDetail.slice('2_example:'.length));
+			return;
+		}
 		if (revealStage === 3 && guidedFocusDetail === 'mismatch_example' && guidedMismatchFeatured?.id) {
 			lastAutoFocusedStage = focusKey;
 			inspectGuidedExample(guidedMismatchFeatured.id);
+			return;
+		}
+		if (revealStage === 3 && guidedFocusDetail?.startsWith('3_example:')) {
+			lastAutoFocusedStage = focusKey;
+			inspectGuidedExample(guidedFocusDetail.slice('3_example:'.length));
 			return;
 		}
 		if (revealStage === 9 && guidedFocusDetail === 'project_example' && guidedStepTenFeatured?.dev) {
@@ -3917,33 +3937,41 @@
 									<div class="poc-stepper-examples" aria-label="Mismatch examples highlighted on the map">
 										<p class="poc-stepper-examples-title">Examples of tracts where access and growth pull apart</p>
 										{#each guidedMismatchExamples as example (example.id)}
-											<div class="poc-stepper-example poc-stepper-example--static">
-												<div class="poc-stepper-example__head">
-													<span class="poc-stepper-example__label">{example.label}</span>
-													<span
-														class="poc-stepper-example__cta"
-														class:poc-stepper-example__cta--mismatch-ha={example.kindRank === 0}
-														class:poc-stepper-example__cta--mismatch-hg={example.kindRank === 1}
-													>
-														{example.kind}
-													</span>
-												</div>
-												<p class="poc-stepper-example__note">{example.note}</p>
-												<div class="poc-stepper-example__metrics">
-													<span><strong>Growth:</strong> {d3.format('.1f')(example.growth)}%</span>
-													<span><strong>Transit access:</strong> {example.stops === 0 ? '0 stops' : `${d3.format(',.0f')(example.stops)} stops`}</span>
-													{#if example.income != null}
-														<span><strong>Median income:</strong> {d3.format('$,.0f')(example.income)}</span>
-													{/if}
-												</div>
-												<div class="poc-stepper-example__actions">
-													<button
-														type="button"
-														class="poc-stepper-example__button"
-														onclick={() => inspectGuidedExample(example.id)}
-													>
-														Show on map
-													</button>
+											<div
+												use:focusWaypointRef={{ stage: 3, key: guidedExampleFocusKey(3, example.id) }}
+												class="poc-stepper-example-wrap"
+											>
+												<div
+													class="poc-stepper-example poc-stepper-example--static"
+													class:poc-stepper-example--active={guidedFocusDetail === guidedExampleFocusKey(3, example.id)}
+												>
+													<div class="poc-stepper-example__head">
+														<span class="poc-stepper-example__label">{example.label}</span>
+														<span
+															class="poc-stepper-example__cta"
+															class:poc-stepper-example__cta--mismatch-ha={example.kindRank === 0}
+															class:poc-stepper-example__cta--mismatch-hg={example.kindRank === 1}
+														>
+															{example.kind}
+														</span>
+													</div>
+													<p class="poc-stepper-example__note">{example.note}</p>
+													<div class="poc-stepper-example__metrics">
+														<span><strong>Growth:</strong> {d3.format('.1f')(example.growth)}%</span>
+														<span><strong>Transit access:</strong> {example.stops === 0 ? '0 stops' : `${d3.format(',.0f')(example.stops)} stops`}</span>
+														{#if example.income != null}
+															<span><strong>Median income:</strong> {d3.format('$,.0f')(example.income)}</span>
+														{/if}
+													</div>
+													<div class="poc-stepper-example__actions">
+														<button
+															type="button"
+															class="poc-stepper-example__button"
+															onclick={() => inspectGuidedExample(example.id)}
+														>
+															Show on map
+														</button>
+													</div>
 												</div>
 											</div>
 										{/each}
@@ -4270,8 +4298,15 @@
 
 	.poc-stepper-examples {
 		display: grid;
-		gap: 0.7rem;
+		gap: 1.25rem;
 		margin-top: 0.8rem;
+	}
+
+	.poc-stepper-example-wrap {
+		display: grid;
+		gap: 0.4rem;
+		min-height: 24vh;
+		align-content: start;
 	}
 
 	.poc-stepper-overlay-toggle {
@@ -4344,7 +4379,9 @@
 		transition:
 			border-color 120ms ease,
 			box-shadow 120ms ease,
-			transform 120ms ease;
+			transform 120ms ease,
+			opacity 180ms ease,
+			filter 180ms ease;
 	}
 
 	.poc-stepper-example:hover,
@@ -4363,6 +4400,18 @@
 		border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
 		box-shadow: none;
 		transform: none;
+	}
+
+	.poc-stepper-example--static:not(.poc-stepper-example--active) {
+		opacity: 0.48;
+		filter: saturate(0.82);
+	}
+
+	.poc-stepper-example--active {
+		opacity: 1;
+		transform: translateY(-2px);
+		border-color: color-mix(in srgb, var(--accent) 46%, var(--border));
+		box-shadow: 0 10px 24px rgba(18, 30, 51, 0.1);
 	}
 
 	.poc-stepper-example__head {
