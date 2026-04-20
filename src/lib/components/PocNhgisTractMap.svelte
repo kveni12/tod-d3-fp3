@@ -607,7 +607,7 @@
 		for (const n of nodes) parent.appendChild(n);
 	}
 
-	function buildCountyBoundaryGeometry(features) {
+	function buildCountyBoundaryGeometry(features, countyByGj) {
 		/** @type {Map<string, { count: number, counties: Set<string>, segment: [[number, number], [number, number]] }>} */
 		const segmentMap = new Map();
 		const roundCoord = (value) => Number(value).toFixed(6);
@@ -641,7 +641,8 @@
 		};
 
 		for (const feature of features ?? []) {
-			const countyRaw = feature?.properties?.county;
+			const gisjoin = feature?.properties?.gisjoin;
+			const countyRaw = gisjoin ? countyByGj?.get(gisjoin) : null;
 			const county =
 				countyRaw && String(countyRaw) !== 'County Name' ? String(countyRaw) : '__unknown__';
 			const geometry = feature?.geometry;
@@ -1033,7 +1034,8 @@
 		mapCanvasLeft = 0;
 		const svgW = mapCanvasLeft + mapW + CHORO_LEGEND_COL_W;
 		const svgH = mapH;
-		const countyBoundaryGeometry = buildCountyBoundaryGeometry(sortedFeatures);
+		const countyByGj = new Map((tractList ?? []).map((t) => [t.gisjoin, t.county]));
+		const countyBoundaryGeometry = buildCountyBoundaryGeometry(sortedFeatures, countyByGj);
 
 		// Fit projection to the full-state GeoJSON when available so excluded
 		// background tracts render correctly; fall back to the story subset.
@@ -1185,8 +1187,8 @@
 				.attr('class', 'county-boundary-path')
 				.attr('d', path(countyBoundaryGeometry))
 				.attr('fill', 'none')
-				.attr('stroke', 'rgba(58, 70, 92, 0.42)')
-				.attr('stroke-width', 1.2)
+				.attr('stroke', 'rgba(58, 70, 92, 0.58)')
+				.attr('stroke-width', 1.35)
 				.attr('stroke-linecap', 'round')
 				.attr('stroke-linejoin', 'round')
 				.attr('vector-effect', 'non-scaling-stroke')
