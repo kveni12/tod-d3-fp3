@@ -551,9 +551,12 @@
 		}
 	];
 
-	const stepContent = $derived(guidedMode ? GUIDED_NARRATIVE_STEPS : PLAYGROUND_MINI_STEPS);
+	/** Use ``$derived.by`` so ``guidedMode`` (a prop) is read reactively, not fixed at first render. */
+	const stepContent = $derived.by(() =>
+		guidedMode ? GUIDED_NARRATIVE_STEPS : PLAYGROUND_MINI_STEPS
+	);
 
-	const keyFindings = $derived(
+	const keyFindings = $derived.by(() =>
 		guidedMode
 			? [
 					'Transit access and housing growth are not aligned evenly across Greater Boston.',
@@ -590,8 +593,11 @@
 	 *     Zero-based step index, clamped to the current ``stepContent`` range.
 	 */
 	function commitGuidedStage(next) {
+		const n = Number(next);
+		if (!Number.isFinite(n)) return;
 		const last = Math.max(0, stepContent.length - 1);
-		const clamped = Math.max(0, Math.min(last, next));
+		const stepIdx = Math.trunc(n);
+		const clamped = Math.max(0, Math.min(last, stepIdx));
 		if (clamped === revealStage) return;
 		revealStage = clamped;
 		guidedFocusDetail = null;
@@ -725,6 +731,15 @@
 	let zoomBehaviorRef = $state(null);
 	let projectionRef = $state(null);
 	let lastStructuralKey = $state('');
+	/**
+	 * Last ``dataKey`` for which we ran ``refreshMetrics()``. Recomputing
+	 * ``aggregateTractTodMetrics`` + ``aggregateDevsByTract`` on every hover /
+	 * opacity repaint was a main-thread bottleneck (thousands of tracts, full dev
+	 * list); that work only needs to re-run when filters / data / time axis change.
+	 */
+	let lastMetricsDataKey = '';
+	/** For ``dataKey``-only; step changes should not use 450ms D3 transitions on every tract. */
+	let lastChoroDataKey = '';
 
 	/** @type {Map<string, object> | null} */
 	let tractTodMetricsMap = $state(null);
@@ -760,9 +775,8 @@
 			nr: nhgisRows?.length ?? 0,
 			md: metricsDevelopments?.length ?? -1,
 			showDev: panelState.showDevelopments,
-			xVar: panelState.xVar,
-			pSandC: playgroundStoryCarousel ? Number(playgroundSandboxCohortOutlines) : 0,
-			pSandD: playgroundStoryCarousel ? Number(playgroundSandboxDevs) : 0
+			// xVar affects sandbox (step 5) choropleth; must re-run metrics when the development axis changes.
+			xVar: panelState.xVar
 		})
 	);
 
@@ -1212,11 +1226,13 @@
 			return gid ? `url(#poc-tract-clip-${mapUid}-${gid})` : null;
 		};
 
+		// Concrete hex: D3 fill transitions from ``var(--bg-card)`` do not interpolate and can leave
+		// invalid fills; keep default aligned with the no-data / NaN band fallback in ``computeFill``.
 		tractGs.append('path')
 			.attr('class', 'tract-fill')
 			.attr('vector-effect', 'non-scaling-stroke')
 			.attr('d', path)
-			.attr('fill', 'var(--bg-card)')
+			.attr('fill', '#e7e0d5')
 			.attr('stroke', 'none')
 			.style('pointer-events', 'none');
 
@@ -1360,12 +1376,18 @@
 	function updateChoropleth({ animate = true, legend = true } = {}) {
 		if (!containerEl || !svgRef) return;
 
-		refreshMetrics();
+		if (dataKey !== lastMetricsDataKey) {
+			lastMetricsDataKey = dataKey;
+			refreshMetrics();
+		}
 
 		const rowByGj = new Map((nhgisRows ?? []).map((r) => [r.gisjoin, r]));
 		const tractByGjX = new Map((tractList ?? []).map((t) => [t.gisjoin, t]));
 		const spotlight = activeSpotlight;
-		const isPlaygroundSandboxX = playgroundStoryCarousel && revealStage === 4;
+		const isPlaygroundSandboxX =
+			playgroundStoryCarousel &&
+			Number.isFinite(revealStage) &&
+			Math.trunc(revealStage) === 4;
 		const xVarKey = panelState.xVar;
 		const xVarMeta = meta.xVariables?.find((v) => v.key === xVarKey);
 		const defaultGrowthTitle = `% housing growth (${periodDisplayLabel(panelState.timePeriod)})`;
@@ -1376,24 +1398,32 @@
 		let values;
 		/** @type {'sym' | 'affshare'} */
 		const choroKind = isPlaygroundSandboxX && xVarKey === 'affordable_share' ? 'affshare' : 'sym';
+		/** @type {Map<string, number>} */
+		const sandboxXByGj = new Map();
 		if (isPlaygroundSandboxX) {
-			values = (nhgisRows ?? [])
-				.map((r) => {
-					const t = r?.gisjoin ? tractByGjX.get(r.gisjoin) : undefined;
-					const xv = getScatterXValue(
-						t,
-						r.gisjoin,
-						xVarKey,
-						tractTodMetricsMap,
-						panelState.timePeriod
+			// One pass over tracts, reuse in domain stats + per-polygon fill (avoids 2N MassBuilds lookups per frame).
+			for (const r of nhgisRows ?? []) {
+				const gj = r?.gisjoin;
+				if (!gj) continue;
+				const t = tractByGjX.get(gj);
+				const xv = getScatterXValue(
+					t,
+					gj,
+					xVarKey,
+					tractTodMetricsMap,
+					panelState.timePeriod
+				);
+				if (choroKind === 'affshare') {
+					const n = xv == null ? NaN : Number(xv);
+					sandboxXByGj.set(gj, Number.isFinite(n) ? n : Number.NaN);
+				} else {
+					sandboxXByGj.set(
+						gj,
+						xv == null || !Number.isFinite(Number(xv)) ? Number.NaN : Number(xv)
 					);
-					if (choroKind === 'affshare') {
-						const n = xv == null ? NaN : Number(xv);
-						return Number.isFinite(n) ? n : NaN;
-					}
-					return xv == null || !Number.isFinite(Number(xv)) ? NaN : Number(xv);
-				})
-				.filter(Number.isFinite);
+				}
+			}
+			values = [...sandboxXByGj.values()].filter(Number.isFinite);
 		} else {
 			values = (nhgisRows ?? [])
 				.map((r) => Number(r.census_hu_pct_change))
@@ -1455,18 +1485,8 @@
 			}
 			const v = (() => {
 				if (isPlaygroundSandboxX) {
-					const t = id ? tractByGjX.get(id) : undefined;
-					const xv = getScatterXValue(
-						t,
-						id,
-						xVarKey,
-						tractTodMetricsMap,
-						panelState.timePeriod
-					);
-					if (choroKind === 'affshare') {
-						return xv == null ? NaN : Number(xv);
-					}
-					return xv == null || !Number.isFinite(Number(xv)) ? NaN : Number(xv);
+					const xNum = id ? sandboxXByGj.get(id) : undefined;
+					return xNum == null || !Number.isFinite(xNum) ? NaN : xNum;
 				}
 				return row ? Number(row.census_hu_pct_change) : NaN;
 			})();
@@ -1518,8 +1538,10 @@
 		// correctly even when the group is dimmed.
 		transitionSel(sel.selectAll('g.tract-g')).attr('opacity', computeOpacity);
 
-		// Choropleth fill only.
-		transitionSel(sel.selectAll('path.tract-fill')).attr('fill', computeFill);
+		// Choropleth fill only. Do not run fills through d3-transition: tweening from CSS
+		// variables (pre-fix) or large batch transitions can break ``fill``; apply immediately
+		// and interrupt any in-flight transition so the layer always has valid hex values.
+		sel.selectAll('path.tract-fill').interrupt().attr('fill', computeFill);
 
 		// Interior rim: TOD green/orange + mismatch purple (clip removes outer half of stroke).
 		transitionSel(sel.selectAll('path.tract-edge-clip'))
@@ -2334,6 +2356,17 @@
 			pinnedDevTooltip = null;
 		}
 
+		// While a tract tooltip is pinned, only the same tract can add/remove from selection
+		// on this event; clicking a different tract dismisses the pin (try again to select).
+		if (pinnedTractId && id !== pinnedTractId) {
+			cancelHoverRest();
+			pinnedTractId = null;
+			pinnedTooltip = null;
+			panelState.setHovered(null);
+			tooltip = { ...tooltip, visible: false };
+			return;
+		}
+
 		cancelHoverRest();
 		// One click = toggle map selection; re-click the same tract to remove it. Tooltip/pin
 		// always tracks the last-clicked tract, independent of whether it is still selected.
@@ -2355,8 +2388,25 @@
 		if (event.shiftKey) panelState.toggleComparisonTract(id);
 	}
 
-	/** Click on map background (not on a tract) → deselect pinned tract or development. */
+	/**
+	 * Click on map background (not on a tract). Main app: unpin and clear tract selection.
+	 * Playground: hide the pinned tooltip only; keep map selections (use the map Clear control or sidebar to clear).
+	 */
 	function handleBackgroundClick() {
+		if (playgroundStoryCarousel) {
+			if (pinnedTractId) {
+				pinnedTractId = null;
+				pinnedTooltip = null;
+				panelState.setHovered(null);
+				tooltip = { ...tooltip, visible: false };
+			}
+			if (pinnedDevKey) {
+				pinnedDevKey = null;
+				pinnedDevTooltip = null;
+				tooltip = { ...tooltip, visible: false };
+			}
+			return;
+		}
 		if (pinnedTractId) {
 			pinnedTractId = null;
 			pinnedTooltip = null;
@@ -2369,6 +2419,20 @@
 			pinnedDevTooltip = null;
 			tooltip = { ...tooltip, visible: false };
 		}
+	}
+
+	/** Clear all tract/development map pins and selection (playground map button; matches sidebar clear). */
+	function clearMapSelectionAndTooltips() {
+		panelState.clearSelection();
+		pinnedTractId = null;
+		pinnedTooltip = null;
+		pinnedDevKey = null;
+		pinnedDevTooltip = null;
+		panelState.setHovered(null);
+		hoveredMismatchCluster = null;
+		pinnedTooltipStage = null;
+		tooltip = { ...tooltip, visible: false };
+		cancelHoverRest();
 	}
 
 	function handleStopEnter(event, d) {
@@ -3256,6 +3320,9 @@
 		if (!containerEl) return;
 		if (structuralKey !== lastStructuralKey) {
 			lastStructuralKey = structuralKey;
+			// Geo / tract set changed; do not serve stale TOD/MassBuilds maps from a prior key.
+			lastMetricsDataKey = '';
+			lastChoroDataKey = '';
 			rebuildSVG();
 			updateChoropleth();
 			updateDevelopments();
@@ -3266,17 +3333,24 @@
 	});
 
 	$effect(() => {
+		const dk = dataKey;
 		void dataKey;
 		void revealStage;
 		void guidedMode;
 		void playgroundStoryCarousel;
+		/** Cohort / dev layer toggles in playground step 5: repaint without re-aggregating MassBuilds. */
+		void playgroundSandboxCohortOutlines;
+		void playgroundSandboxDevs;
 		void activeSpotlight;
 		void lowIncomeFocusOn;
 		void hoveredMismatchCluster;
 		void mismatchOutlineMode;
 		void comparisonMetric;
 		if (!containerEl || !svgRef) return;
-		updateChoropleth({ animate: true, legend: true });
+		const dataChanged = dk !== lastChoroDataKey;
+		if (dataChanged) lastChoroDataKey = dk;
+		// If only the walkthrough step (or a pure overlay toggle) changed, avoid thousands of 450ms transitions.
+		updateChoropleth({ animate: dataChanged, legend: true });
 		updateFocusRegion();
 		updateDevelopments();
 		updateInsightMarkers();
@@ -3418,6 +3492,11 @@
 		void playgroundStoryCarousel;
 		const stage = revealStage;
 		if (!guidedMode && !playgroundStoryCarousel) {
+			prevRevealStageForPin = stage;
+			return;
+		}
+		// Playground: keep tract selection + tooltips when changing the carousel step (no scroll story).
+		if (playgroundStoryCarousel) {
 			prevRevealStageForPin = stage;
 			return;
 		}
@@ -3584,11 +3663,11 @@
 								<strong> {d3.format('.1f')(panelState.sigDevMinPctStockIncrease ?? 2)}%</strong> housing stock increase.
 							</li>
 							<li>
-								TOD-Dominated: Remaining tracts with &ge;
+								TOD-Dominated: Remaining tracts with more than
 								<strong> {d3.format('.0f')((panelState.todFractionCutoff ?? 0.5) * 100)}%</strong> of new units being TOD.
 							</li>
 							<li>
-								Non-TOD-Dominated: Remaining tracts with &lt;
+								Non-TOD-Dominated: Remaining tracts with less than
 								<strong> {d3.format('.0f')((panelState.todFractionCutoff ?? 0.5) * 100)}%</strong> of new units being TOD.
 							</li>
 							<li>
@@ -3897,6 +3976,18 @@
 					>
 						<div class="map-widget">
 							{#if !guidedMode}
+							{#if playgroundStoryCarousel && panelState.selectedTracts.size > 0}
+								<div class="map-widget__clear" role="group" aria-label="Map selection">
+									<button
+										class="poc-map-control poc-map-control--wide"
+										type="button"
+										onclick={clearMapSelectionAndTooltips}
+										aria-label="Clear all selected tracts from the map"
+									>
+										Clear
+									</button>
+								</div>
+							{/if}
 							<div class="map-widget__controls" role="group" aria-label="Map zoom and reset controls">
 								<button class="poc-map-control" type="button" onclick={zoomInMap} aria-label="Zoom in">+</button>
 								<button class="poc-map-control" type="button" onclick={zoomOutMap} aria-label="Zoom out">−</button>
@@ -3945,12 +4036,17 @@
 													<span class="poc-key-tract-fill-line">
 														Fill = share of new units that are multi-family. Darker purple fill means a higher multi-family share.
 													</span>
-													<span
-														class="poc-key-tract-bar"
-														style="background: linear-gradient(to right, #ffffff, #7c3f98);"
-														role="img"
-														aria-label="Share of new units that are multi-family: lower toward white, higher toward purple"
-													></span>
+													<span class="poc-key-tract-scale">
+														<span
+															class="poc-key-tract-bar"
+															style="background: linear-gradient(to right, #ffffff, #7c3f98);"
+															aria-hidden="true"
+														></span>
+														<span class="poc-key-tract-scale-labels">
+															<span>0% multifamily</span>
+															<span>100% multifamily</span>
+														</span>
+													</span>
 												</span>
 											</p>
 											{#if devSizeLegendTicks && devSizeLegendTicks.length > 0}
@@ -4069,7 +4165,7 @@
 								</button>
 								<select
 									class="poc-guided-nav__select"
-									value={String(revealStage)}
+									value={String(Number.isFinite(revealStage) ? revealStage : 0)}
 									onchange={(e) => commitGuidedStage(Number(e.currentTarget.value))}
 									aria-label="Select map step"
 								>
@@ -4103,8 +4199,11 @@
 					>
 						{#if playgroundStoryCarousel}
 							{#key revealStage}
-								{@const pgStepIdx = Math.min(Math.max(0, revealStage), stepContent.length - 1)}
-								{@const step = stepContent[pgStepIdx]}
+								{@const nSteps = stepContent.length}
+								{@const safeStage = Number.isFinite(revealStage) ? revealStage : 0}
+								{@const pgStepIdx =
+									nSteps > 0 ? Math.min(Math.max(0, safeStage), nSteps - 1) : 0}
+								{@const step = stepContent[pgStepIdx] ?? stepContent[0]}
 								<section
 									class="poc-stepper-card poc-stepper-card--active poc-stepper-card--carousel"
 									data-step-index={pgStepIdx}
@@ -4116,15 +4215,15 @@
 									<div class="poc-stepper-card-top">
 										<span class="poc-stepper-pill-num">{pgStepIdx + 1}</span>
 										<div class="poc-stepper-pill-text">
-											<span class="poc-stepper-pill-kicker">{step.kicker}</span>
-											<span class="poc-stepper-pill-title">{step.title}</span>
+											<span class="poc-stepper-pill-kicker">{step?.kicker ?? ''}</span>
+											<span class="poc-stepper-pill-title">{step?.title ?? ''}</span>
 										</div>
 									</div>
 									<p class="poc-stepper-card-body">
-										{#if step.bodyHtml}
+										{#if step?.bodyHtml}
 											{@html step.bodyHtml}
 										{:else}
-											{step.body}
+											{step?.body ?? ''}
 										{/if}
 									</p>
 								</section>
@@ -4941,8 +5040,9 @@
 			align-items: start;
 		}
 
+		/* Equal column widths: cohort spotlight and mismatch focus share the row 50/50. */
 		.poc-spotlight-mismatch-row {
-			grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.95fr);
+			grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.05fr);
 			column-gap: 8px;
 		}
 	}
@@ -4983,6 +5083,11 @@
 			top: auto;
 			grid-column: auto;
 			grid-row: auto;
+		}
+
+		.map-widget__clear {
+			top: 8px;
+			left: 8px;
 		}
 
 		.map-widget__controls {
@@ -5616,10 +5721,29 @@
 		display: block;
 	}
 
+	.poc-key-tract-scale {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		width: 50%;
+		min-width: 3.5rem;
+		max-width: 100%;
+		align-self: flex-start;
+	}
+
+	.poc-key-tract-scale-labels {
+		display: flex;
+		justify-content: space-between;
+		gap: 0.25rem;
+		width: 100%;
+		font-size: 0.65rem;
+		line-height: 1.2;
+		color: var(--text-muted);
+	}
+
 	.poc-key-tract-bar {
 		display: block;
 		width: 100%;
-		min-width: 7rem;
 		height: 0.5rem;
 		border-radius: 4px;
 		border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text-muted));
@@ -5891,6 +6015,15 @@
 
 	.map-widget {
 		position: relative;
+	}
+
+	.map-widget__clear {
+		position: absolute;
+		top: 10px;
+		left: 10px;
+		z-index: 6;
+		display: inline-flex;
+		gap: 6px;
 	}
 
 	.map-widget__controls {
