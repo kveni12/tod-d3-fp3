@@ -1409,6 +1409,105 @@ export function getScatterYValue(tract, yBase, timePeriod) {
 }
 
 /**
+ * Time-period tags with scatter map/chart options (``panelState.timePeriod``).
+ */
+export const DASHBOARD_TIME_PERIODS = Object.freeze(['90_00', '00_10', '10_20', '00_20', '90_20']);
+
+/**
+ * Y / X variable keys (from ``meta``) that have at least one finite scatter value on some tract
+ * in at least one period, using the same rules as ``getScatterYValue`` and ``getScatterXValue``.
+ * MassBuilds keys use ``filterDevelopments`` / ``aggregateDevsByTract`` with neutral filters.
+ *
+ * Parameters
+ * ----------
+ * tracts : Array<object>
+ *     Full ``tractData`` (not a filtered subset) so availability matches the static dataset.
+ * developmentRows : Array<object>
+ *     ``developments`` store (may be empty).
+ * yKeys : Array<string>
+ *     Base Y keys from ``meta.yVariables`` (no period suffix).
+ * xKeys : Array<string>
+ *     Base X keys from ``meta.xVariables``.
+ *
+ * Returns
+ * -------
+ * Object
+ *     ``yKeysWithData`` and ``xKeysWithData`` as ``Set``\ s of those ``yKeys`` / ``xKeys``
+ *     that are ever showable. Empty ``tracts`` yields empty sets.
+ */
+export function axisKeysWithDataInAnyPeriod(tracts, developmentRows, yKeys, xKeys) {
+	const yKeysWithData = new Set();
+	const xKeysWithData = new Set();
+	if (!tracts?.length) {
+		return { yKeysWithData, xKeysWithData };
+	}
+
+	const tps = DASHBOARD_TIME_PERIODS;
+	const devs = developmentRows ?? [];
+
+	for (const yk of yKeys) {
+		outerY: for (const t of tracts) {
+			for (const tp of tps) {
+				const v = getScatterYValue(t, yk, tp);
+				if (v != null) {
+					yKeysWithData.add(yk);
+					break outerY;
+				}
+			}
+		}
+	}
+
+	if (xKeys.includes('census_hu_change')) {
+		outerC: for (const t of tracts) {
+			if (!t.gisjoin) continue;
+			for (const tp of tps) {
+				const v = getScatterXValue(t, t.gisjoin, 'census_hu_change', null, tp);
+				if (v != null) {
+					xKeysWithData.add('census_hu_change');
+					break outerC;
+				}
+			}
+		}
+	}
+
+	const massX = xKeys.filter((k) => k !== 'census_hu_change');
+	if (devs.length && massX.length) {
+		const tractMap = new Map();
+		for (const t of tracts) {
+			if (t.gisjoin) tractMap.set(t.gisjoin, t);
+		}
+		const needM = new Set(massX);
+		for (const tp of tps) {
+			if (needM.size === 0) break;
+			const panel = {
+				timePeriod: tp,
+				minUnitsPerProject: 0,
+				minDevMultifamilyRatioPct: 0,
+				minDevAffordableRatioPct: 0,
+				includeRedevelopment: true,
+				transitDistanceMi: 0.5
+			};
+			const devF = filterDevelopments(devs, panel);
+			const agg = aggregateDevsByTract(devF, tractMap, tp, panel);
+			for (const t of tracts) {
+				const gj = t.gisjoin;
+				if (!gj) continue;
+				for (const xk of massX) {
+					if (!needM.has(xk)) continue;
+					const v = getScatterXValue(t, gj, xk, agg, tp);
+					if (v != null) {
+						xKeysWithData.add(xk);
+						needM.delete(xk);
+					}
+				}
+			}
+		}
+	}
+
+	return { yKeysWithData, xKeysWithData };
+}
+
+/**
  * Drop points outside ``±k`` marginal standard deviations on X and on Y (means
  * and SDs from the full set). Intended to limit OLS leverage from extreme coordinates.
  *

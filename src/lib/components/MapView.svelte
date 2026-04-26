@@ -21,7 +21,14 @@
 		transitModeUiLabel
 	} from '$lib/utils/derived.js';
 	import { periodCensusBounds } from '$lib/utils/periods.js';
-	import { MBTA_BLUE, MBTA_GREEN, MBTA_MAP_NEUTRAL, MBTA_RED } from '$lib/utils/mbtaColors.js';
+	import {
+		MBTA_BLUE,
+		MBTA_GREEN,
+		MBTA_GREEN_DEV_OUTLINE,
+		MBTA_MAP_NEUTRAL,
+		MBTA_ORANGE_DEV_OUTLINE,
+		MBTA_RED
+	} from '$lib/utils/mbtaColors.js';
 
 	let { panelState, domainOverride = null } = $props();
 
@@ -711,7 +718,9 @@
 				d.mfShare == null || !Number.isFinite(d.mfShare) ? '#475569' : mfColor(d.mfShare)
 			)
 			.attr('fill-opacity', 0.75)
-			.attr('stroke', (d) => (d.transitAccessible ? '#ffffff' : 'rgba(15, 23, 42, 0.55)'))
+			.attr('stroke', (d) =>
+				d.transitAccessible ? MBTA_GREEN_DEV_OUTLINE : MBTA_ORANGE_DEV_OUTLINE
+			)
 			.attr('stroke-width', (d) => d.strokeWBase * invK)
 			.style('cursor', 'pointer')
 			.on('mouseenter', handleDevEnter)

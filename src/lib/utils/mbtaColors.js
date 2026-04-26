@@ -10,6 +10,20 @@ export const MBTA_GREEN = '#00843D';
 /** Orange Line */
 export const MBTA_ORANGE = '#ED8B00';
 
+/**
+ * Lighter green tint for **development** glyph strokes (transit-accessible projects).
+ *
+ * Blends ~42% white into ``MBTA_GREEN`` so fills stay readable; used on maps and legends.
+ */
+export const MBTA_GREEN_DEV_OUTLINE = '#73BB94';
+
+/**
+ * Lighter orange tint for **development** glyph strokes (not transit-accessible).
+ *
+ * Blends ~42% white into ``MBTA_ORANGE``; pairs with ``MBTA_GREEN_DEV_OUTLINE``.
+ */
+export const MBTA_ORANGE_DEV_OUTLINE = '#F5BF73';
+
 /** Red Line */
 export const MBTA_RED = '#DA291C';
 

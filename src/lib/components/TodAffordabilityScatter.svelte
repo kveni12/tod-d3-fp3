@@ -29,6 +29,18 @@
 		yVarOverride = null
 	} = $props();
 
+	/**
+	 * Clear tract selection for this panel (map + all linked scatters).
+	 * Prefer ``PanelState.clearSelection`` so ``lastInteractedGisjoin`` resets with the main app.
+	 */
+	function clearTractSelection() {
+		if (typeof panelState.clearSelection === 'function') {
+			panelState.clearSelection();
+		} else {
+			panelState.selectedTracts = new Set();
+		}
+	}
+
 	let containerEl = $state(null);
 	let tooltip = $state({ visible: false, x: 0, y: 0, lines: [] });
 
@@ -590,10 +602,21 @@
 </script>
 
 <div class="tod-aff-wrap">
-	<label class="trim-check">
-		<input type="checkbox" bind:checked={panelState.trimOutliers} />
-		<span>Trim axes (exclude &gt;10σ)</span>
-	</label>
+	<div class="tod-aff-toolbar">
+		<label class="trim-check">
+			<input type="checkbox" bind:checked={panelState.trimOutliers} />
+			<span>Trim axes (exclude &gt;10σ)</span>
+		</label>
+		<button
+			type="button"
+			class="scatter-clear-sel"
+			disabled={panelState.selectedTracts.size === 0}
+			onclick={clearTractSelection}
+			aria-label="Clear selected tracts from the map and charts"
+		>
+			Clear selection
+		</button>
+	</div>
 	<div bind:this={containerEl} class="tod-aff-chart"></div>
 	{#if tooltip.visible}
 		<div
@@ -615,6 +638,39 @@
 		min-width: 0;
 	}
 
+	.tod-aff-toolbar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 6px;
+	}
+
+	.tod-aff-toolbar .scatter-clear-sel {
+		margin-left: auto;
+	}
+
+	.scatter-clear-sel {
+		font-size: 0.75rem;
+		padding: 4px 10px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--bg-card);
+		color: var(--text-muted);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.scatter-clear-sel:hover:not(:disabled) {
+		background: var(--bg-hover);
+		color: var(--text);
+	}
+
+	.scatter-clear-sel:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+
 	.tod-aff-chart {
 		min-height: 100px;
 	}
@@ -625,7 +681,6 @@
 		gap: 6px;
 		font-size: 0.75rem;
 		color: var(--text-muted);
-		margin-bottom: 6px;
 		cursor: pointer;
 	}
 

@@ -1,6 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
-	import { meta } from '$lib/stores/data.svelte.js';
+	import { meta, tractData, developments } from '$lib/stores/data.svelte.js';
+	import { axisKeysWithDataInAnyPeriod } from '$lib/utils/derived.js';
 
 	let {
 		panelState,
@@ -8,10 +9,40 @@
 		allowedXKeys = null
 	} = $props();
 
+	/**
+	 * Y/X keys with any finite value in the loaded tract set for some time period, or
+	 * the full ``meta`` catalog when data is not yet available (home story) so we
+	 * do not empty the lists before ``meta`` / ``tractData`` are loaded.
+	 */
+	const axisDataKeys = $derived.by(() => {
+		const yCat = meta.yVariables ?? [];
+		const xCat = meta.xVariables ?? [];
+		if (!tractData.length || (!yCat.length && !xCat.length)) {
+			return {
+				y: new Set(yCat.map((v) => v.key)),
+				x: new Set(xCat.map((v) => v.key))
+			};
+		}
+		const yList = yCat.map((v) => v.key);
+		const xList = xCat.map((v) => v.key);
+		const { yKeysWithData, xKeysWithData } = axisKeysWithDataInAnyPeriod(
+			tractData,
+			developments,
+			yList,
+			xList
+		);
+		return {
+			y: yKeysWithData.size > 0 ? yKeysWithData : new Set(yList),
+			x: xKeysWithData.size > 0 ? xKeysWithData : new Set(xList)
+		};
+	});
+
 	const groupedYVars = $derived.by(() => {
+		const yOk = axisDataKeys.y;
 		const groups = [];
 		const seen = new Set();
 		for (const v of meta.yVariables ?? []) {
+			if (!yOk.has(v.key)) continue;
 			if (!seen.has(v.cat)) {
 				seen.add(v.cat);
 				groups.push({ cat: v.cat, catLabel: v.catLabel, vars: [] });
@@ -23,10 +54,12 @@
 
 	/** X-axis vars grouped by data source (census vs MassBuilds). */
 	const groupedXVars = $derived.by(() => {
+		const xOk = axisDataKeys.x;
 		const bySrc = new Map();
 		const order = [];
 		for (const v of meta.xVariables ?? []) {
 			if (allowedXKeys && !allowedXKeys.includes(v.key)) continue;
+			if (!xOk.has(v.key)) continue;
 			const src = v.source ?? 'other';
 			if (!bySrc.has(src)) {
 				bySrc.set(src, {
@@ -43,6 +76,25 @@
 			return rank(a) - rank(b);
 		});
 		return order.map((s) => bySrc.get(s));
+	});
+
+	$effect(() => {
+		const yk = axisDataKeys.y;
+		if (yk.size > 0 && !yk.has(panelState.yVar)) {
+			const first = (meta.yVariables ?? []).find((v) => yk.has(v.key));
+			if (first) panelState.yVar = first.key;
+		}
+	});
+
+	$effect(() => {
+		const xk = axisDataKeys.x;
+		if (xk.size === 0) return;
+		if (xk.has(panelState.xVar)) return;
+		const catalog = meta.xVariables ?? [];
+		const candidates = allowedXKeys?.length
+			? catalog.filter((v) => xk.has(v.key) && allowedXKeys.includes(v.key))
+			: catalog.filter((v) => xk.has(v.key));
+		if (candidates[0]) panelState.xVar = candidates[0].key;
 	});
 
 	/* TOD Analysis uses MassBuilds for housing-stock % only (no Census source in this UI). */

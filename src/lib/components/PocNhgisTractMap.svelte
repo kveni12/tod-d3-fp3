@@ -4,6 +4,7 @@
 	import {
 		tractGeo,
 		allTractsGeo,
+		tractData,
 		developments,
 		mbtaStops,
 		mbtaLines,
@@ -12,6 +13,7 @@
 	import {
 		aggregateDevsByTract,
 		aggregateTractTodMetrics,
+		axisKeysWithDataInAnyPeriod,
 		buildFilteredData,
 		classifyTractDevelopment,
 		developmentAffordableUnitsCapped,
@@ -30,8 +32,10 @@
 	import {
 		MBTA_BLUE,
 		MBTA_GREEN,
+		MBTA_GREEN_DEV_OUTLINE,
 		MBTA_MAP_NEUTRAL,
 		MBTA_ORANGE,
+		MBTA_ORANGE_DEV_OUTLINE,
 		MBTA_RED,
 		MBTA_YELLOW
 	} from '$lib/utils/mbtaColors.js';
@@ -763,11 +767,40 @@
 	);
 
 
+	/**
+	 * Same as ``FilterPanel`` axis filtering: only variables with data in the full ``tractData``
+	 * for some time period, so the playground choropleth cannot pick an empty-metric id.
+	 */
+	const sandboxAxisDataKeys = $derived.by(() => {
+		const yCat = meta.yVariables ?? [];
+		const xCat = meta.xVariables ?? [];
+		if (!tractData.length || (!yCat.length && !xCat.length)) {
+			return {
+				y: new Set(yCat.map((v) => v.key)),
+				x: new Set(xCat.map((v) => v.key))
+			};
+		}
+		const yList = yCat.map((v) => v.key);
+		const xList = xCat.map((v) => v.key);
+		const { yKeysWithData, xKeysWithData } = axisKeysWithDataInAnyPeriod(
+			tractData,
+			developments,
+			yList,
+			xList
+		);
+		return {
+			y: yKeysWithData.size > 0 ? yKeysWithData : new Set(yList),
+			x: xKeysWithData.size > 0 ? xKeysWithData : new Set(xList)
+		};
+	});
+
 	/** X-axis options for the playground sandbox choropleth (all ``meta.xVariables``; same groupings as FilterPanel). */
 	const groupedSandboxXVars = $derived.by(() => {
+		const xOk = sandboxAxisDataKeys.x;
 		const bySrc = new Map();
 		const order = [];
 		for (const v of meta.xVariables ?? []) {
+			if (!xOk.has(v.key)) continue;
 			const src = v.source ?? 'other';
 			if (!bySrc.has(src)) {
 				bySrc.set(src, {
@@ -788,9 +821,11 @@
 
 	/** Y-axis options for the playground sandbox choropleth (``meta.yVariables`` by category). */
 	const groupedSandboxYVars = $derived.by(() => {
+		const yOk = sandboxAxisDataKeys.y;
 		const groups = [];
 		const seen = new Set();
 		for (const v of meta.yVariables ?? []) {
+			if (!yOk.has(v.key)) continue;
 			if (!seen.has(v.cat)) {
 				seen.add(v.cat);
 				groups.push({ cat: v.cat, catLabel: v.catLabel, vars: [] });
@@ -798,6 +833,20 @@
 			groups.find((g) => g.cat === v.cat)?.vars.push(v);
 		}
 		return groups;
+	});
+
+	$effect(() => {
+		if (!playgroundStoryCarousel) return;
+		const p = parsePlaygroundChoroId(playgroundSandboxChoroId);
+		const have = p.axis === 'x' ? sandboxAxisDataKeys.x : sandboxAxisDataKeys.y;
+		if (have.size > 0 && have.has(p.key)) return;
+		const xFirst = (meta.xVariables ?? []).find((v) => sandboxAxisDataKeys.x.has(v.key));
+		if (xFirst) {
+			playgroundSandboxChoroId = `x:${xFirst.key}`;
+			return;
+		}
+		const yFirst = (meta.yVariables ?? []).find((v) => sandboxAxisDataKeys.y.has(v.key));
+		if (yFirst) playgroundSandboxChoroId = `y:${yFirst.key}`;
 	});
 
 	const dataKey = $derived(
@@ -1443,12 +1492,10 @@
 	function updateChoropleth({ animate = true, legend = true } = {}) {
 		if (!containerEl || !svgRef) return;
 
-		/** MassBuilds aggregates for this paint; use return value from ``refreshMetrics`` when it runs. */
-		let devMetricsMap = tractTodMetricsMap;
+		/** Recompute TOD + ``aggregateDevsByTract`` maps when panel filters / period change. */
 		if (dataKey !== lastMetricsDataKey) {
 			lastMetricsDataKey = dataKey;
-			const refreshed = refreshMetrics();
-			devMetricsMap = refreshed.tractTodMetricsMap;
+			refreshMetrics();
 		}
 
 		const rowByGj = new Map((nhgisRows ?? []).map((r) => [r.gisjoin, r]));
@@ -1490,7 +1537,7 @@
 								t,
 								gj,
 								choroParsed.key,
-								devMetricsMap,
+								devAggMap,
 								panelState.timePeriod
 							);
 				if (choroKind === 'affshare') {
@@ -1868,7 +1915,9 @@
 							d.mfShare == null || !Number.isFinite(d.mfShare) ? '#cbd5e1' : mfColor(d.mfShare)
 						)
 						.attr('fill-opacity', 0.92)
-						.attr('stroke', (d) => (d.transitAccessible ? MBTA_GREEN : MBTA_ORANGE))
+						.attr('stroke', (d) =>
+							d.transitAccessible ? MBTA_GREEN_DEV_OUTLINE : MBTA_ORANGE_DEV_OUTLINE
+						)
 						.attr('opacity', 0)
 						.style('cursor', 'pointer')
 						.style('pointer-events', 'none')
@@ -1888,7 +1937,9 @@
 				d.mfShare == null || !Number.isFinite(d.mfShare) ? '#cbd5e1' : mfColor(d.mfShare)
 			)
 			.attr('fill-opacity', 0.92)
-			.attr('stroke', (d) => (d.transitAccessible ? MBTA_GREEN : MBTA_ORANGE))
+			.attr('stroke', (d) =>
+				d.transitAccessible ? MBTA_GREEN_DEV_OUTLINE : MBTA_ORANGE_DEV_OUTLINE
+			)
 			.attr('opacity', (d) => {
 				if (!featuredDevelopmentKeys) return 1;
 				if (d.isActiveGuidedDevelopment) return 1;
@@ -2206,7 +2257,7 @@
 			const rawV =
 				p.axis === 'y'
 					? getScatterYValue(t, p.key, panelState.timePeriod)
-					: getScatterXValue(t, id, p.key, tractTodMetricsMap, panelState.timePeriod);
+					: getScatterXValue(t, id, p.key, devAggMap, panelState.timePeriod);
 			const n = rawV == null ? NaN : Number(rawV);
 			const xStr =
 				p.axis === 'x' && p.key === 'affordable_share' && Number.isFinite(n)
@@ -6072,13 +6123,14 @@
 		background: #ffffff;
 	}
 
+	/* Matches ``MBTA_GREEN_DEV_OUTLINE`` / ``MBTA_ORANGE_DEV_OUTLINE`` in mbtaColors.js (fainter than tract TOD swatches). */
 	.poc-k-ring--dev-access {
-		border-color: #00843d;
+		border-color: #73bb94;
 		box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
 	}
 
 	.poc-k-ring--dev-noaccess {
-		border-color: #ed8b00;
+		border-color: #f5bf73;
 	}
 
 	.map-wrap {
