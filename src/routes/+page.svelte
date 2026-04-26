@@ -35,15 +35,15 @@
 		yMetricDisplayKind,
 		formatYMetricSummary
 	} from '$lib/utils/derived.js';
-	import { MBTA_GREEN, MBTA_ORANGE, MBTA_PURPLE, MBTA_PURPLE_LIGHT } from '$lib/utils/mbtaColors.js';
+	import { MBTA_BLUE, MBTA_GREEN, MBTA_ORANGE } from '$lib/utils/mbtaColors.js';
 	import TodAffordabilityScatter from '$lib/components/TodAffordabilityScatter.svelte';
 
 	/** Minimal-cohort swatch: aligned with ``TodIntensityScatter`` / TOD map greys. */
 	const GREY_MINIMAL = '#a8908c';
 
-	/** Affordable TOD share split mini-bars: light purple (<50%) vs MBTA purple (≥50%). */
-	const AFFORD_BAR_LO = MBTA_PURPLE_LIGHT;
-	const AFFORD_BAR_HI = MBTA_PURPLE;
+	/** Affordable TOD share split mini-bars: light blue (<50%) vs MBTA blue (≥50%). */
+	const AFFORD_BAR_LO = '#93c5fd';
+	const AFFORD_BAR_HI = MBTA_BLUE;
 
 	/* ═══════════════════════════════════════════════════════
 	   MUNICIPAL STATE (Part 1)
@@ -892,14 +892,15 @@
 				<p class="chart-note">
 					For readability, tract tooltips and example cards use short labels like <strong>“Tract in Suffolk County”</strong> rather than full census tract identifiers. Those labels are there to help orient the viewer quickly, not to imply that the analysis itself is only happening at the county level.
 				</p>
-				<div class="chart-wrap chart-tall chart-wrap--poc-map">
+				<div class="chart-wrap chart-tall chart-wrap--poc-map chart-wrap--poc-map--main-tall">
 					<PocNhgisTractMap
 						panelState={pocMapPanel}
 						tractList={tractListFiltered}
 						nhgisRows={nhgisLikeRows}
 						metricsDevelopments={tractWindowDevs}
 						guidedMode={true}
-						showMbtaOverlayControls={false}
+						choroplethMapHeight={645}
+						showKeyFindings={true}
 					/>
 				</div>
 			</section>
@@ -1252,7 +1253,7 @@
 							<div class="scatter-container scatter-container--afford-embed">
 								<TodAffordabilityScatter panelState={affIncomePanelState} showTrimControl={false} />
 							</div>
-							<figcaption class="cohort-mini-bar__cap">Tracts with greater affordability trend towards smaller income increases.</figcaption>
+							<figcaption class="cohort-mini-bar__cap">text goes here</figcaption>
 						</figure>
 					</div>
 					<div class="afford-four-cell afford-four-cell--bar">
@@ -1358,7 +1359,7 @@
 							<div class="scatter-container scatter-container--afford-embed">
 								<TodAffordabilityScatter panelState={affEduPanelState} showTrimControl={false} />
 							</div>
-							<figcaption class="cohort-mini-bar__cap">Tracts with greater affordability trend towards smaller education changes.</figcaption>
+							<figcaption class="cohort-mini-bar__cap">text goes here</figcaption>
 						</figure>
 					</div>
 					<div class="afford-four-cell afford-four-cell--bar">
@@ -2075,6 +2076,11 @@
 		width: 100%;
 		max-width: 100%;
 		min-height: 560px;
+	}
+
+	/* Main story: taller choropleth (645px viewBox height vs 430px default) — keep playground at default. */
+	.chart-wrap--poc-map--main-tall {
+		min-height: 840px;
 	}
 
 	/* Cohort comparison chart: responsive height, scroll if needed */

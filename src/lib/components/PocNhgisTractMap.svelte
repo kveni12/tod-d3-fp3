@@ -62,8 +62,12 @@
 	 * playgroundStoryCarousel : boolean
 	 *     When true (playground only): the five short playground steps (baseline → cohort → mismatch →
 	 *     projects → sandbox) with arrow/dropdown navigation instead of scroll-sync. Implies ``!guidedMode``.
-	 * showMbtaOverlayControls : boolean
-	 *     When false, hide the MBTA lines/stops checkbox fieldset (e.g. home page); ``panelState`` still drives visibility.
+	 * choroplethMapHeight : number
+	 *     Pixel height of the choropleth SVG viewBox (``fitExtent`` vertical extent). Default matches
+	 *     playground; the main story page can pass a larger value for a taller map.
+	 * showKeyFindings : boolean
+	 *     When true: render the “Key findings” callout under the map chrome (root story page only;
+	 *     omit on playground and other embeds).
 	 */
 	let {
 		panelState,
@@ -72,7 +76,8 @@
 		metricsDevelopments = null,
 		guidedMode = false,
 		playgroundStoryCarousel = false,
-		showMbtaOverlayControls = true,
+		choroplethMapHeight = 430,
+		showKeyFindings = false,
 		mapFocusedTractDetail = $bindable(null),
 		mapViewActions = $bindable(null)
 	} = $props();
@@ -474,8 +479,7 @@
 			bodyHtml:
 				'This map shows how transit access across Greater Boston is concentrated in a dense, radial network centered on the urban core. The Red, Orange, Blue, and Green lines cluster around Boston and Cambridge, while the commuter rail extends outward into surrounding suburbs, with services like the CapeFLYER reaching even farther.<br><br>Focus on where lines overlap most. Boston and Cambridge stand out, along with places like Quincy and Revere. These areas represent the strongest and most consistent transit access.<br><br>This sets up a simple question: does housing growth appear in these same places?',
 			legend:
-				'Tract fill in this step is a simple focus view (not the growth scale yet). The walkthrough may reveal MBTA line/stop context as needed; when lines are in view, darker, saturated colors mark higher-frequency service.',
-			prompt: 'Compare where the basemap’s rapid transit and commuter patterns concentrate versus where tract fill changes in later steps.'
+				'Tract fill is muted here to foreground the network: rapid transit and commuter rail are the main read. (Use MBTA line/stop toggles in the free Explore view.)'
 		},
 		{
 			kicker: 'Step 2',
@@ -483,16 +487,15 @@
 			bodyHtml:
 				'This map adds housing growth. Darker blues show stronger growth, reds show weaker or negative growth. The Seaport stands out, but strong growth also appears farther out in parts of Plymouth, Essex, and Worcester counties.<br><br>Now compare this to the previous map. Some growth appears near strong transit, but much of it appears beyond those areas.<br><br>If transit-oriented development is working as intended, we might expect growth to be more concentrated near the strongest parts of the network. Instead, the pattern looks more spread out, raising questions about how growth and access are distributed.',
 			legend:
-				'The vertical colorbar is % change in housing units (your selected time period). Blue = growth, red = decline; tan = limited or unreliable census change. The scale is fixed for the rest of the story.',
-			prompt: 'Find one dark-blue tract away from a rapid-transit line, and one near a line with pale or red fill.'
+				'Use the color bar on the right edge of the map: blue = higher % housing unit growth, red = lower or negative growth, relative to the scale printed on the bar. Tan = limited or unreliable data.'
 		},
 		{
 			kicker: 'Step 3',
 			title: 'Looking at the Contrast Up Close',
 			bodyHtml:
 				'Here, we zoom into individual tracts to make the pattern easier to see.<br><br>Focus on a few examples. Some tracts show strong housing growth with only limited transit access nearby. Others sit closer to strong transit but show little or even negative growth.<br><br>Looking at these side by side makes the contrast clearer. Growth and transit access do not consistently appear together.',
-			legend: 'The map still uses the same housing-growth color scale; scroll-linked zoom pulls you into tracts that illustrate the access–growth tension.',
-			prompt: 'Open the “Show on map” cards below when you want a tract centered.'
+			legend:
+				'Same housing-growth color scale as the previous step. Dimmed tracts are outside the scroll-sync focus so nearby contrasts read more clearly.'
 		},
 		{
 			kicker: 'Step 4',
@@ -500,8 +503,7 @@
 			bodyHtml:
 				'This step makes the pattern explicit. Solid purple outlines mark tracts with strong transit access but low or negative housing growth. Dashed purple outlines mark the opposite, where growth is strong despite weaker or minimal transit access.<br><br>Both patterns appear across the region. Some high-access areas show limited growth, while some lower-access areas show substantial growth.<br><br>This does not mean growth outside transit is inherently negative, but it highlights a clear difference between where access is strongest and where housing is being added.',
 			legend:
-				'Purple (interior) outlines are a separate layer: solid violet = many transit stops but weak housing growth; dashed lavender = strong growth with relatively few nearby stops. The choropleth fill still encodes % housing change.',
-			prompt: 'Pick one solid-purple tract and one dashed-purple tract; compare their growth fill to their stop count in the tooltip after this step unlocks tracts.'
+				'The map key lists purple rim styles. Growth fill and the color bar still describe housing change; purple outlines add the access–growth mismatch read.'
 		},
 		{
 			kicker: 'Step 5',
@@ -509,32 +511,31 @@
 			bodyHtml:
 				'We now move from mismatch to classification. Tracts are grouped based on how development is distributed relative to transit. Green outlines mark more transit-oriented development, while orange outlines mark more non-TOD patterns.<br><br>The map still shows housing growth underneath, but now also shows whether that growth is concentrated near transit or not.<br><br>This makes it easier to compare not just where growth appears, but how it relates to transit access across the region.',
 			legend:
-				'Teal and orange rings: TOD-dominated vs non-TOD-dominated tracts (MassBuilds + stock-growth rules). They are interior outline accents—tract fill is still % housing change.',
-			why: 'The cohorts explain where new housing volume leans TOD or not; they are not a second choropleth.'
+				'The key shows teal (TOD-dominated) vs orange (non-TOD-dominated) interior rims. Choropleth color is still % housing growth from the same diverging scale as before.'
 		},
 		{
 			kicker: 'Step 6',
 			title: 'Boston and Cambridge',
 			bodyHtml:
 				'This zoom focuses on Boston and Cambridge as a reference case. Most tracts here are TOD-dominated, which aligns with strong transit access.<br><br>At the same time, the pattern is not uniform. There are areas with minimal development, and some tracts show low or even negative growth.<br><br>This shows that even in the most connected areas, housing growth is not consistently high.',
-			legend: 'Cohort outline colors and the growth colorbar work the same; the map only changes zoom to the urban core.',
-			prompt: 'Relate the teal-dominant tracts to the red line, green line, and bus corridors you turned on in step 1.'
+			legend:
+				'Teal / orange TOD split plus growth fill, same as step 5; zoom is tighter on the core so you can read individual tracts.'
 		},
 		{
 			kicker: 'Step 7',
 			title: 'Quincy and Revere',
 			bodyHtml:
 				'Moving outward to Quincy and Revere, the pattern becomes more mixed. Transit access is still present, but nearby tracts do not all show the same relationship between growth and TOD.<br><br>There are slightly more non-TOD tracts, and there are also areas with minimal development or low growth.<br><br>This suggests that the relationship between transit and growth becomes less consistent outside the urban core.',
-			legend: 'Encoding is unchanged: growth fill, teal/orange rings for TOD share of new development, grey rims for other tracts.',
-			prompt: 'Compare a teal-ring tract on the Red line with an orange outline nearby.'
+			legend:
+				'Encodings match step 5: growth in color, TOD / non-TOD in the green vs orange ring treatment shown in the key.'
 		},
 		{
 			kicker: 'Step 8',
 			title: 'Outer-Ring Growth',
 			bodyHtml:
 				'In the outer ring, the pattern shifts more clearly. Many tracts are farther from strong transit, and much of the development appears in non-TOD categories.<br><br>Transit is still present in some places, but it is more limited and less frequent. Growth appears more dispersed and less closely associated with strong transit access.<br><br>This highlights a different pattern compared to the urban core.',
-			legend: 'The growth ramp and TOD / non-TOD outline legend at lower-left still apply; zoom highlights western growth pockets.',
-			why: 'This step stresses that the mismatch is regional, not only a downtown phenomenon.'
+			legend:
+				'Same legend as steps 5–7: fill = growth, rims = TOD class. The outer zoom emphasizes non-core relationships.'
 		},
 		{
 			kicker: 'Step 9',
@@ -542,16 +543,15 @@
 			bodyHtml:
 				'This step adds individual developments. Each dot represents a project, with size reflecting units and color showing the share of multi-family housing from white to purple. Green outlines indicate transit-accessible projects, while yellow outlines indicate those that are not.<br><br>Most projects are overwhelmingly multi-family, with many near 100 percent. Larger projects appear more often near the core, but projects are distributed across the region.<br><br>Many projects, even in highly accessible areas, include little or no affordable housing, which limits who is able to access those units.',
 			legend:
-				'Dot radius ≈ √ housing units. Fill runs white → purple = multifamily share of the project. A green ring = within walking distance of MBTA (per the panel distance); gold = not. Dots are MassBuilds — tract fill is still % housing growth.',
-			prompt: 'Match a large purple dot in the Seaport to the tract it sits in on the growth scale.'
+				'Key + map: dot area scales with project size (√ units); white→purple = multifamily share; green vs yellow project ring = transit-accessible or not. Tract color is still the growth layer.'
 		},
 		{
 			kicker: 'Step 10',
 			title: 'Projects as Examples',
 			bodyHtml:
 				'This step highlights a few projects to make the pattern more concrete. Some, like Assembly Row and 16 Boardman St, represent strong TOD cases with dense housing near transit. Others, like 16 Dyer, are near transit but less tightly integrated.<br><br>On the other end, projects like Mahoney Farm and The Pinehills show substantial growth farther from strong transit access.<br><br>These examples make it easier to compare how location, scale, and affordability vary across developments.',
-			legend: 'The development key from step 9 still holds; featured projects pulse slightly on the map for legibility.',
-			why: 'Concrete projects anchor the aggregate tract statistics in recognizable places.'
+			legend:
+				'Read highlighted pins like other development dots: size = units, fill ramp = % multifamily, outline = transit access; compare with the named cards beside the map.'
 		},
 		{
 			kicker: 'Step 11',
@@ -559,9 +559,7 @@
 			bodyHtml:
 				'In this final step, higher-income tracts fade into the background, where high income is defined as greater than $125k per year and lower income as less than $125k.<br><br>Many lower-income tracts appear within mismatch categories. Some are in high-access areas with limited growth, while others are in areas with growth but weaker transit access.<br><br>Among lower-income tracts, there also appear to be more areas with minimal development, even in places with transit access.<br><br>This shifts the focus from where housing is built to how access is distributed. Transit-oriented development is often associated with improved access, but without affordability, that access may not be equally available to all households.',
 			legend:
-				'Lower-income tracts stay on the full growth scale; higher-income tracts are neutralized so the outlines read clearly. Use the “Compare the lower-income view…” buttons to switch between cohort and mismatch purple accents.',
-			why: 'Income is a separate threshold layer— it does not replace the % growth or outline encodings from earlier steps.',
-			prompt: 'Switch between the two lower-income outline modes and name one tract that reads differently in each mode.'
+				'Lower-income tracts stay vivid; other tracts wash out. Use the toggles in the key if cohort vs mismatch rims are shown—meaning matches the same swatches and line styles as earlier steps.'
 		}
 	];
 
@@ -569,37 +567,27 @@
 		{
 			kicker: 'Step 1',
 			title: 'Development',
-			body: 'Start with a choropleth with tracts filled according to their % housing growth.',
-			legend:
-				'The colorbar in the map corner encodes the same % housing unit change (period from controls). Blue = increase, red = decrease, tan = missing or unreliable; scale is not recomputed as you change steps here.'
+			body: 'Start with a choropleth with tracts filled according to their % housing growth.'
 		},
 		{
 			kicker: 'Step 2',
 			title: 'TOD tract cohorts',
-			body: 'Orange and green outlines mark tracts that lean more TOD-dominated or non-TOD-dominated, while the choropleth still carries the main story.',
-			legend:
-				'Teal ring = TOD-dominated tracts, orange = non-TOD-dominated (per MassBuilds + growth thresholds). Interior rings keep the fill readable—fill still = growth.'
+			body: 'Orange and green outlines mark tracts that lean more TOD-dominated or non-TOD-dominated, while the choropleth still carries the main story.'
 		},
 		{
 			kicker: 'Step 3',
 			title: 'Access–growth mismatch',
-			body: 'Purple outlines take over here to show where transit access and housing growth pull apart, without the cohort outlines getting in the way.',
-			legend:
-				'Solid purple = many nearby stops, weak growth; dashed = strong growth, fewer stops. Tract non-matches are slightly muted so the mismatch reads clearly.'
+			body: 'Purple outlines take over here to show where transit access and housing growth pull apart, without the cohort outlines getting in the way.'
 		},
 		{
 			kicker: 'Step 4',
 			title: 'Development projects',
-			body: 'The cohort outlines return with development dots on top, so you can compare tract patterns with the projects that sit inside them.',
-			legend:
-				'Dots: size = units, fill = % multifamily; green ring = walkable to MBTA, gold = not. Cohort colors match step 2; growth fill is unchanged under the projects.'
+			body: 'The cohort outlines return with development dots on top, so you can compare tract patterns with the projects that sit inside them.'
 		},
 		{
 			kicker: 'Step 5',
 			title: 'Sandbox map',
-			body: 'Use the menu below to choose any development or demographic-change metric for the choropleth. Toggle developments, TOD / non-TOD outlines, and MBTA layers independently.',
-			legend:
-				'Pick any metric from the dropdown; the colorbar relabels to match. The checkboxes and MBTA fieldset add optional outlines, projects, and transit—same encodings as in the main story, mixed freely.'
+			body: 'Use the menu below to choose any development or demographic-change metric for the choropleth. Toggle developments, TOD / non-TOD outlines, and MBTA layers independently.'
 		}
 	];
 
@@ -771,12 +759,13 @@
 
 	let mapCanvasLeft = 0;
 	let mapW = 520;
-	const mapH = 430;
+	/** Pixel height of the map canvas in D3 ``fitExtent`` space (from ``choroplethMapHeight``). */
+	const mapH = $derived(choroplethMapHeight);
 	/** ViewBox dimensions for anchoring HTML callouts to projection coordinates. */
 	let mapViewBox = $state(/** @type {{ svgW: number; mapW: number; mapH: number }} */ ({
 		svgW: 520,
 		mapW: 520,
-		mapH: 470
+		mapH: 430
 	}));
 
 	let svgRef = $state(null);
@@ -804,7 +793,8 @@
 			gf: tractGeo?.features?.length ?? 0,
 			af: allTractsGeo?.features?.length ?? 0,
 			ms: mbtaStops.length,
-			showDev: panelState.showDevelopments
+			showDev: panelState.showDevelopments,
+			cmh: choroplethMapHeight
 		})
 	);
 
@@ -1797,62 +1787,20 @@
 
 		const svg = svgRef;
 		if (legend) {
+			/** Map growth colorbar + related glyphs vs prior baseline (~30% larger). */
+			const legScale = 1.3;
 			const legGroup = svg.select('.map-legend-group');
 			legGroup.selectAll('*').remove();
-			// Bottom-left of the map canvas: inset so axis labels + rotated title do not clip at x=0.
-			const leftInset = 34;
-			legGroup.attr('transform', `translate(${mapCanvasLeft + leftInset},0)`);
-
-			// Step 0 uses a neutral “walkthrough” fill (not the growth color ramp), so the usual % growth
-			// colorbar would mislead readers; use a two-chip focus legend instead of the full ramp.
-			if (guidedMode && revealStage === 0) {
-				const yBase = mapH - 10;
-				const legendG = legGroup.append('g').attr('class', 'map-legend-inner map-legend-inner--transit-baseline');
-				legendG
-					.append('text')
-					.attr('x', 0)
-					.attr('y', yBase - 48)
-					.attr('fill', 'var(--text-muted)')
-					.attr('font-size', '7.5px')
-					.attr('font-weight', 600)
-					.text('Tract focus (this step, not % growth)');
-
-				const sw = 12;
-				const h = 10;
-				const y1 = yBase - 28;
-				legendG.append('rect').attr('x', 0).attr('y', y1 - h).attr('width', sw).attr('height', h).attr('fill', '#dbe7f6').attr('stroke', 'var(--border)').attr('stroke-width', 0.35);
-				legendG
-					.append('text')
-					.attr('x', 18)
-					.attr('y', y1 - 2)
-					.attr('fill', 'var(--text-muted)')
-					.attr('font-size', '6.5px')
-					.text('Hovered or selected (lighter blue)');
-
-				legendG.append('rect').attr('x', 0).attr('y', y1 + 4).attr('width', sw).attr('height', h).attr('fill', '#f2ede3').attr('stroke', 'var(--border)').attr('stroke-width', 0.35);
-				legendG
-					.append('text')
-					.attr('x', 18)
-					.attr('y', y1 + 12)
-					.attr('fill', 'var(--text-muted)')
-					.attr('font-size', '6.5px')
-					.text('Story focus region (neutral)');
-
-				legendG
-					.append('text')
-					.attr('x', 0)
-					.attr('y', yBase + 4)
-					.attr('fill', 'var(--text-muted)')
-					.attr('font-size', '6px')
-					.attr('font-weight', 500)
-					.text('Housing % growth color scale returns in the next step.');
-			} else {
-			const barW = 10;
-			const barRight = 58;
+			const barW = 10 * legScale;
+			const barRight = 58 * legScale;
 			const barLeft = barRight - barW;
-			const bottomPad = 3;
-			const tanH = 11;
-			const legBarH = Math.min(132, Math.max(88, mapH * 0.31));
+			// Bottom-right of the map canvas: ticks extend left into the map; local bar right edge = ``barRight``.
+			const rightInset = 6 * legScale;
+			const legGroupX = mapCanvasLeft + mapW - rightInset - barRight;
+			legGroup.attr('transform', `translate(${legGroupX},0)`);
+			const bottomPad = 3 * legScale;
+			const tanH = 11 * legScale;
+			const legBarH = Math.min(132, Math.max(88, mapH * 0.31)) * legScale;
 			const y0 = mapH - bottomPad - tanH - legBarH;
 			const fmtTick = (v) => {
 				const n = Number(invTransform(Number(v)));
@@ -1881,7 +1829,7 @@
 					.attr('height', Math.max(1, yBottom - yTop))
 					.attr('fill', CHORO_COLOR_STEPS[i])
 					.attr('stroke', 'var(--border)')
-					.attr('stroke-width', 0.35);
+					.attr('stroke-width', 0.35 * legScale);
 			}
 
 			const yScale = d3
@@ -1897,30 +1845,30 @@
 						.axisLeft(yScale)
 						.ticks(5)
 						.tickFormat((v) => fmtTick(v))
-						.tickSize(3)
+						.tickSize(3 * legScale)
 				)
 				.call((g) => g.selectAll('path,line').attr('stroke', 'var(--border)'))
-				.call((g) => g.selectAll('text').attr('fill', 'var(--text-muted)').attr('font-size', '8px'));
+				.call((g) => g.selectAll('text').attr('fill', 'var(--text-muted)').attr('font-size', `${8 * legScale}px`));
 
 			legendG
 				.append('text')
-				.attr('transform', `translate(4, ${y0 + legBarH * 0.5}) rotate(-90)`)
+				.attr('transform', `translate(${4 * legScale}, ${y0 + legBarH * 0.5}) rotate(-90)`)
 				.attr('text-anchor', 'middle')
 				.attr('fill', 'var(--text-muted)')
-				.attr('font-size', '7.5px')
+				.attr('font-size', `${7.5 * legScale}px`)
 				.attr('font-weight', 600)
 				.text(legendTitle);
 
-			// Tan tracts: explain under the in-map colorbar (HTML duplicate removed from the key card).
+			// Tan tracts: right-aligned with the color strip so long labels do not exceed the map viewBox.
 			legendG
 				.append('text')
-				.attr('x', 0)
-				.attr('y', y0 + legBarH + 9)
+				.attr('x', barRight)
+				.attr('y', y0 + legBarH + 9 * legScale)
+				.attr('text-anchor', 'end')
 				.attr('fill', 'var(--text-muted)')
-				.attr('font-size', '6.5px')
+				.attr('font-size', `${6.5 * legScale}px`)
 				.attr('font-weight', 500)
 				.text('Tan = limited or unreliable data');
-			}
 		}
 
 		containerEl.__pocChoroMaxAbs = maxAbs;
@@ -3836,6 +3784,7 @@
 <div class="poc-nhgis-map">
 	<div class="poc-scrolly">
 		<div class="poc-scrolly-map">
+			{#if !guidedMode}
 			<div class="poc-top-row">
 			<!-- <div class="poc-methods poc-methods--lead card-key" role="note" aria-label="TOD definitions">
 				<p class="poc-methods__title">Key definitions</p>
@@ -3963,9 +3912,11 @@
 					</div>
 			</div>
 			</div>
+			{/if}
 
 			<div class="poc-scrolly-shell">
 				<div class="poc-scrolly-left">
+					{#if !guidedMode}
 					<div class="poc-control-stack">
 				<div class="poc-spotlight-mismatch-row">
 				<div class="poc-spotlight card-key" role="group" aria-label="Tract cohort spotlight">
@@ -4133,6 +4084,7 @@
 					</div>
 				{/if}
 					</div>
+					{/if}
 
 					<div class="map-wrap">
 						<div class="map-visual-column">
@@ -4153,7 +4105,7 @@
 							</div>
 						</fieldset>
 					{/if}
-					{#if showMbtaOverlayControls}
+					{#if !guidedMode && (!playgroundStoryCarousel || revealStage === 4)}
 					<fieldset class="poc-transit-field">
 						<legend class="poc-transit-legend">MBTA Overlays</legend>
 						<div class="poc-transit-compact" role="group" aria-label="Transit overlays">
@@ -4439,9 +4391,6 @@
 											{step?.body ?? ''}
 										{/if}
 									</p>
-									{#if step?.legend}
-										<p class="poc-stepper-card-note"><strong>How to read it:</strong> {step.legend}</p>
-									{/if}
 									{#if pgStepIdx === 4}
 										<div class="poc-sandbox-choro-block">
 											<label class="poc-sandbox-choro-field">
@@ -4685,14 +4634,16 @@
 					</div>
 				</aside>
 			</div>
-			<!-- <div class="poc-key-findings card-key" role="note" aria-label="Key findings summary">
-				<p class="poc-detail__kicker">Key findings</p>
-				<ul class="poc-map-callouts__list">
-					{#each keyFindings as c, i (i)}
-						<li>{c}</li>
-					{/each}
-				</ul>
-			</div> -->
+			{#if showKeyFindings}
+				<div class="poc-key-findings card-key" role="note" aria-label="Key findings summary">
+					<p class="poc-detail__kicker">Key findings</p>
+					<ul class="poc-map-callouts__list">
+						{#each keyFindings as c, i (i)}
+							<li>{c}</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
 			<p class="poc-map-zoom-hint">
 				{#if playgroundStoryCarousel}
 					Use the step controls to run through the five layers. Pan and zoom freely; Controls adjust filters for the map
@@ -6258,16 +6209,18 @@
 		margin-bottom: clamp(4px, 1.25vh, 10px);
 	}
 
-	/* Cohort / mismatch / dev keys sit bottom-left on the choropleth, to the right of the in-SVG colorbar. */
+	/* Cohort / mismatch / dev keys sit bottom-left; in-SVG growth colorbar is on the right edge. */
 	.poc-map-key-overlay {
 		position: absolute;
-		left: calc(5.75rem + 2ch);
+		left: 0.35rem;
 		bottom: 0;
 		z-index: 3;
-		max-width: min(252px, calc((100% - 5.75rem - 0.5rem) * 0.6));
+		max-width: min(252px, calc(100% - 6.25rem));
 		max-height: min(52%, 320px);
 		overflow: hidden auto;
 		padding: 0 0 1px 0;
+		/* 30% larger than prior overlay sizing; keeps proportion with SVG colorbar. */
+		zoom: 1.3;
 		/* Clicks in this box stop here so the scrollable legend does not move the map. */
 	}
 
