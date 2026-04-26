@@ -737,6 +737,8 @@ export function todAffordabilitySplitYMeans(
 	return {
 		meanLo: loStats.mean,
 		meanHi: hiStats.mean,
+		seLo: loStats.se,
+		seHi: hiStats.se,
 		ciLoMin: loStats.ciLo,
 		ciLoMax: loStats.ciHi,
 		ciHiMin: hiStats.ciLo,
@@ -746,7 +748,15 @@ export function todAffordabilitySplitYMeans(
 		nLoWithY: lo.filter((t) => t[yKey] != null && Number.isFinite(Number(t[yKey]))).length,
 		nHiWithY: hi.filter((t) => t[yKey] != null && Number.isFinite(Number(t[yKey]))).length,
 		nEffLo: loStats.nEff,
-		nEffHi: hiStats.nEff
+		nEffHi: hiStats.nEff,
+		significantDiff:
+			Number.isFinite(loStats.se) &&
+			Number.isFinite(hiStats.se) &&
+			Number.isFinite(loStats.mean) &&
+			Number.isFinite(hiStats.mean)
+				? Math.abs(loStats.mean - hiStats.mean) >
+					1.96 * Math.sqrt(loStats.se ** 2 + hiStats.se ** 2)
+				: false
 	};
 }
 

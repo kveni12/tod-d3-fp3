@@ -344,6 +344,7 @@
 		return {
 			...raw,
 			kind,
+			significantDiff: raw.significantDiff,
 			fmtLo: formatYMetricSummary(raw.meanLo, kind),
 			fmtHi: formatYMetricSummary(raw.meanHi, kind)
 		};
@@ -530,17 +531,21 @@
 			const top = Math.min(y0px, yV);
 			const hPx = Math.abs(yV - y0px);
 			const valueLabel = formatYMetricSummary(d.v, row.kind);
+			const errLoY = Number.isFinite(d.errLo) ? toPlotY(d.errLo) : null;
+			const errHiY = Number.isFinite(d.errHi) ? toPlotY(d.errHi) : null;
+			const errTop = errLoY != null && errHiY != null ? Math.min(errLoY, errHiY) : yV;
+			const errBottom = errLoY != null && errHiY != null ? Math.max(errLoY, errHiY) : yV;
 			/** @type {'hanging' | 'alphabetic'} */
 			const valueLabelBaseline = yV > y0px ? 'hanging' : 'alphabetic';
-			const valueLabelY = yV > y0px ? yV + 3 : yV - 2;
+			const valueLabelY = yV > y0px ? errBottom + 6 : errTop - 6;
 			return {
 				...d,
 				xPx: (x(d.id) ?? 0) + m.l,
 				yPx: top,
 				wPx: x.bandwidth(),
 				hPx,
-				errLoY: Number.isFinite(d.errLo) ? toPlotY(d.errLo) : null,
-				errHiY: Number.isFinite(d.errHi) ? toPlotY(d.errHi) : null,
+				errLoY,
+				errHiY,
 				valueLabel,
 				valueLabelY,
 				valueLabelBaseline
@@ -1366,7 +1371,7 @@
 											font-weight="600"
 											fill="var(--ink, #1f2430)"
 										>
-											{b.valueLabel}
+											{b.valueLabel}{affIncomeSplit.significantDiff ? '*' : ''}
 										</text>
 									{/each}
 									{#each affIncomeSplitBar.bars as b (b.id)}
@@ -1383,7 +1388,7 @@
 									{/each}
 								</svg>
 								<figcaption class="cohort-mini-bar__cap">
-									Tracts w/ &lt;50% affordable units see larger avg. income increases.
+									Tracts w/ &lt;50% affordable units see larger avg. income increases.{affIncomeSplit.significantDiff ? ' * difference is statistically distinguishable.' : ''}
 								</figcaption>
 							</figure>
 						{:else}
@@ -1504,7 +1509,7 @@
 											font-weight="600"
 											fill="var(--ink, #1f2430)"
 										>
-											{b.valueLabel}
+											{b.valueLabel}{affEduSplit.significantDiff ? '*' : ''}
 										</text>
 									{/each}
 									{#each affEduSplitBar.bars as b (b.id)}
@@ -1521,7 +1526,7 @@
 									{/each}
 								</svg>
 								<figcaption class="cohort-mini-bar__cap">
-									Tracts with &lt;50% affordable units see larger avg. education change.
+									Tracts with &lt;50% affordable units see larger avg. education change.{affEduSplit.significantDiff ? ' * difference is statistically distinguishable.' : ''}
 								</figcaption>
 							</figure>
 						{:else}
