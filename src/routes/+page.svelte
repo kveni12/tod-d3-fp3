@@ -130,8 +130,8 @@
 		const cb = { onSelectionChange: () => { selected = new Set(selected); } };
 		if (elScatter) renderMuniScatter(elScatter, visibleRows, domainRows, muniState, cb);
 		if (elComposition) renderMuniComposition(elComposition, projectRows, muniState);
-		if (elGrowthCapture) renderMuniGrowthCapture(elGrowthCapture, projectRows, domainRows, muniState);
 		if (elAffordableTrend) renderMuniAffordableTrend(elAffordableTrend, projectRows, muniState);
+		if (elGrowthCapture) renderMuniGrowthCapture(elGrowthCapture, projectRows, domainRows, muniState);
 	}
 
 	// Debounce draw during playback via rAF
