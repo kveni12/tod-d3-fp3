@@ -484,13 +484,15 @@
 		const valuePlotTop = 42;
 		const ih = H - valuePlotTop - m.b;
 		const items = [
-			{ id: 'lo', shortLabel: '<50%', v: row.meanLo, fill: AFFORD_BAR_LO },
-			{ id: 'hi', shortLabel: '≥50%', v: row.meanHi, fill: AFFORD_BAR_HI }
+			{ id: 'lo', shortLabel: '<50%', v: row.meanLo, errLo: row.ciLoMin, errHi: row.ciLoMax, fill: AFFORD_BAR_LO },
+			{ id: 'hi', shortLabel: '≥50%', v: row.meanHi, errLo: row.ciHiMin, errHi: row.ciHiMax, fill: AFFORD_BAR_HI }
 		];
 		const finite = items.filter((d) => Number.isFinite(d.v));
 		if (finite.length === 0) return null;
-		const minV = d3.min(finite, (d) => d.v) ?? 0;
-		const maxV = d3.max(finite, (d) => d.v) ?? 0;
+		const minV =
+			d3.min(finite, (d) => (Number.isFinite(d.errLo) ? d.errLo : d.v)) ?? 0;
+		const maxV =
+			d3.max(finite, (d) => (Number.isFinite(d.errHi) ? d.errHi : d.v)) ?? 0;
 		const y0 = Math.min(0, minV);
 		const y1 = Math.max(0, maxV);
 		const span = y1 - y0;
@@ -537,6 +539,8 @@
 				yPx: top,
 				wPx: x.bandwidth(),
 				hPx,
+				errLoY: Number.isFinite(d.errLo) ? toPlotY(d.errLo) : null,
+				errHiY: Number.isFinite(d.errHi) ? toPlotY(d.errHi) : null,
 				valueLabel,
 				valueLabelY,
 				valueLabelBaseline
@@ -1327,6 +1331,32 @@
 												>{b.shortLabel} affordable TOD share: {formatYMetricSummary(b.v, affIncomeSplit.kind)} (population-weighted mean)</title
 											>
 										</rect>
+										{#if b.errLoY != null && b.errHiY != null}
+											<line
+												x1={b.xPx + b.wPx / 2}
+												y1={b.errLoY}
+												x2={b.xPx + b.wPx / 2}
+												y2={b.errHiY}
+												stroke="var(--ink, #1f2430)"
+												stroke-width="1.5"
+											/>
+											<line
+												x1={b.xPx + b.wPx * 0.25}
+												y1={b.errLoY}
+												x2={b.xPx + b.wPx * 0.75}
+												y2={b.errLoY}
+												stroke="var(--ink, #1f2430)"
+												stroke-width="1.5"
+											/>
+											<line
+												x1={b.xPx + b.wPx * 0.25}
+												y1={b.errHiY}
+												x2={b.xPx + b.wPx * 0.75}
+												y2={b.errHiY}
+												stroke="var(--ink, #1f2430)"
+												stroke-width="1.5"
+											/>
+										{/if}
 										<text
 											x={b.xPx + b.wPx / 2}
 											y={b.valueLabelY}
@@ -1439,6 +1469,32 @@
 												>{b.shortLabel} affordable TOD share: {formatYMetricSummary(b.v, affEduSplit.kind)} (population-weighted mean)</title
 											>
 										</rect>
+										{#if b.errLoY != null && b.errHiY != null}
+											<line
+												x1={b.xPx + b.wPx / 2}
+												y1={b.errLoY}
+												x2={b.xPx + b.wPx / 2}
+												y2={b.errHiY}
+												stroke="var(--ink, #1f2430)"
+												stroke-width="1.5"
+											/>
+											<line
+												x1={b.xPx + b.wPx * 0.25}
+												y1={b.errLoY}
+												x2={b.xPx + b.wPx * 0.75}
+												y2={b.errLoY}
+												stroke="var(--ink, #1f2430)"
+												stroke-width="1.5"
+											/>
+											<line
+												x1={b.xPx + b.wPx * 0.25}
+												y1={b.errHiY}
+												x2={b.xPx + b.wPx * 0.75}
+												y2={b.errHiY}
+												stroke="var(--ink, #1f2430)"
+												stroke-width="1.5"
+											/>
+										{/if}
 										<text
 											x={b.xPx + b.wPx / 2}
 											y={b.valueLabelY}

@@ -517,6 +517,51 @@ export function computeGroupMean(tracts, yKey, weightKey = null) {
 }
 
 /**
+ * Weighted mean plus an approximate 95% confidence interval for a tract group.
+ *
+ * Parameters
+ * ----------
+ * tracts : Array<object>
+ * yKey : string
+ * weightKey : string | null
+ *
+ * Returns
+ * -------
+ * {{ mean: number, sd: number, se: number, ciLo: number, ciHi: number, n: number, nEff: number }}
+ */
+export function computeGroupStats(tracts, yKey, weightKey = null) {
+	const pairs = tracts
+		.filter((t) => t[yKey] != null)
+		.map((t) => ({ y: Number(t[yKey]), w: weightKey ? (Number(t[weightKey]) || 0) : 1 }))
+		.filter((p) => Number.isFinite(p.y) && p.w > 0);
+	if (pairs.length === 0) {
+		return { mean: NaN, sd: NaN, se: NaN, ciLo: NaN, ciHi: NaN, n: 0, nEff: 0 };
+	}
+	const sumW = d3.sum(pairs, (p) => p.w);
+	const mean = weightKey
+		? sumW > 0
+			? d3.sum(pairs, (p) => p.w * p.y) / sumW
+			: NaN
+		: d3.mean(pairs, (p) => p.y);
+	const variance =
+		sumW > 0 ? d3.sum(pairs, (p) => p.w * (p.y - mean) ** 2) / sumW : NaN;
+	const sd = Number.isFinite(variance) ? Math.sqrt(Math.max(variance, 0)) : NaN;
+	const sumWSq = d3.sum(pairs, (p) => p.w * p.w);
+	const nEff = weightKey ? (sumWSq > 0 ? (sumW * sumW) / sumWSq : 0) : pairs.length;
+	const se = nEff > 1 && Number.isFinite(sd) ? sd / Math.sqrt(nEff) : NaN;
+	const z = 1.96;
+	return {
+		mean,
+		sd,
+		se,
+		ciLo: Number.isFinite(se) ? mean - z * se : NaN,
+		ciHi: Number.isFinite(se) ? mean + z * se : NaN,
+		n: pairs.length,
+		nEff
+	};
+}
+
+/**
  * Determine the population weight key for a time period.
  *
  * Parameters
@@ -687,13 +732,21 @@ export function todAffordabilitySplitYMeans(
 		else hi.push(t);
 	}
 	const wk = weightKey ?? popWeightKey(panelState.timePeriod);
+	const loStats = computeGroupStats(lo, yKey, wk);
+	const hiStats = computeGroupStats(hi, yKey, wk);
 	return {
-		meanLo: computeGroupMean(lo, yKey, wk),
-		meanHi: computeGroupMean(hi, yKey, wk),
+		meanLo: loStats.mean,
+		meanHi: hiStats.mean,
+		ciLoMin: loStats.ciLo,
+		ciLoMax: loStats.ciHi,
+		ciHiMin: hiStats.ciLo,
+		ciHiMax: hiStats.ciHi,
 		nLo: lo.length,
 		nHi: hi.length,
 		nLoWithY: lo.filter((t) => t[yKey] != null && Number.isFinite(Number(t[yKey]))).length,
-		nHiWithY: hi.filter((t) => t[yKey] != null && Number.isFinite(Number(t[yKey]))).length
+		nHiWithY: hi.filter((t) => t[yKey] != null && Number.isFinite(Number(t[yKey]))).length,
+		nEffLo: loStats.nEff,
+		nEffHi: hiStats.nEff
 	};
 }
 

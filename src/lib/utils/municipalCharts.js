@@ -963,13 +963,6 @@ export function renderMuniAffordableTrend(el, projectRows, state) {
 
 /* ── Growth capture ──────────────────────────────────── */
 
-function withAlpha(hex, alpha) {
-	const c = d3.color(hex);
-	if (!c) return hex;
-	c.opacity = alpha;
-	return c.formatRgb();
-}
-
 export function renderMuniGrowthCapture(el, projectRows, domainRows, state) {
 	const root = d3.select(el);
 	root.selectAll('*').remove();
@@ -1070,18 +1063,12 @@ export function renderMuniGrowthCapture(el, projectRows, domainRows, state) {
 		.attr('x', 0)
 		.attr('y', (d) => yScale(Math.max(0, d.highShare - 0.5)))
 		.attr('width', x.bandwidth())
-		.attr('height', (d) => Math.abs(yScale(d.highShare - 0.5) - yScale(0)))
+		.attr('height', (d) => {
+			const delta = d.highShare >= 0.5 ? d.highShare - 0.5 : d.lowShare - 0.5;
+			return Math.abs(yScale(delta) - yScale(0));
+		})
 		.attr('rx', 3)
-		.attr('fill', (d) => (d.highShare >= 0.5 ? 'var(--accent)' : withAlpha('#0b8f45', 0.24)));
-
-	groups
-		.append('rect')
-		.attr('x', 0)
-		.attr('y', (d) => yScale(Math.min(0, 0.5 - d.lowShare)))
-		.attr('width', x.bandwidth())
-		.attr('height', (d) => Math.abs(yScale(0.5 - d.lowShare) - yScale(0)))
-		.attr('rx', 3)
-		.attr('fill', (d) => (d.lowShare > 0.5 ? 'var(--blue-5)' : withAlpha('#1d4fb5', 0.24)));
+		.attr('fill', (d) => (d.highShare >= 0.5 ? 'var(--accent)' : 'var(--blue-5)'));
 
 	groups
 		.append('title')
