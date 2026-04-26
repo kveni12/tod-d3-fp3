@@ -596,6 +596,8 @@ export function formatYMetricSummary(value, kind) {
  * panelState : {{ timePeriod: string, yVar: string }}
  * developments : Array<object>
  *     MassBuilds rows (same as dashboard store).
+ * yVarOverride : string | null, optional
+ *     When set, use this Y metric key instead of ``panelState.yVar`` (e.g. parallel income/education summaries).
  *
  * Returns
  * -------
@@ -604,10 +606,10 @@ export function formatYMetricSummary(value, kind) {
  *     nTod: number, nNonTod: number, nMinimal: number,
  *     nTodWithY: number, nNonTodWithY: number, nMinimalWithY: number } | null}
  */
-export function cohortYMeansForPanel(tracts, panelState, developments) {
-	if (!tracts?.length || !panelState?.timePeriod || !panelState?.yVar) return null;
+export function cohortYMeansForPanel(tracts, panelState, developments, yVarOverride = null) {
+	const yBase = yVarOverride ?? panelState?.yVar;
+	if (!tracts?.length || !panelState?.timePeriod || !yBase) return null;
 	const tp = panelState.timePeriod;
-	const yBase = panelState.yVar;
 	const yKey = `${yBase}_${tp}`;
 	const weightKey = popWeightKey(tp);
 	const split = buildCohortDevelopmentSplit(tracts, panelState, developments);
@@ -639,6 +641,8 @@ export function cohortYMeansForPanel(tracts, panelState, developments) {
  * tracts : Array<object>
  * panelState : {{ timePeriod: string, yVar: string }}
  * selectedGisjoins : Set<string> | Iterable<string>
+ * yVarOverride : string | null, optional
+ *     When set, use this Y metric key instead of ``panelState.yVar``.
  *
  * Returns
  * -------
@@ -646,10 +650,10 @@ export function cohortYMeansForPanel(tracts, panelState, developments) {
  *     ``mean`` is NaN when no tracts are selected or none have finite Y; ``nSelected`` counts
  *     tracts in the subset (regardless of Y missingness).
  */
-export function selectedTractsYWeightedMean(tracts, panelState, selectedGisjoins) {
-	if (!tracts?.length || !panelState?.timePeriod || !panelState?.yVar) return null;
+export function selectedTractsYWeightedMean(tracts, panelState, selectedGisjoins, yVarOverride = null) {
+	const yBase = yVarOverride ?? panelState?.yVar;
+	if (!tracts?.length || !panelState?.timePeriod || !yBase) return null;
 	const tp = panelState.timePeriod;
-	const yBase = panelState.yVar;
 	const yKey = `${yBase}_${tp}`;
 	const weightKey = popWeightKey(tp);
 	const set =

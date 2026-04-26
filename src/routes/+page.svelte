@@ -34,6 +34,10 @@
 		yMetricDisplayKind,
 		formatYMetricSummary
 	} from '$lib/utils/derived.js';
+	import { MBTA_GREEN, MBTA_ORANGE } from '$lib/utils/mbtaColors.js';
+
+	/** Minimal-cohort swatch: aligned with ``TodIntensityScatter`` / TOD map greys. */
+	const GREY_MINIMAL = '#a8908c';
 
 	/* ═══════════════════════════════════════════════════════
 	   MUNICIPAL STATE (Part 1)
@@ -187,7 +191,11 @@
 		pocMapPanel.showBusStops = false;
 	});
 
+	/** One-shot: avoid re-invoking ``loadStoryData`` if this ``$effect`` re-runs (Svelte 5 can re-execute). */
+	let storyDataLoadInit = $state(false);
 	$effect(() => {
+		if (storyDataLoadInit) return;
+		storyDataLoadInit = true;
 		loadStoryData()
 			.then(() => {
 				tractReady = true;
@@ -308,21 +316,25 @@
 	const eduRow = $derived(buildStoryCohortRow('bachelors_pct_change'));
 
 	/**
-	 * Layout for a compact three-cohort bar chart (same population-weighted means as body copy / scatter Y).
+	 * Layout for a three-cohort bar chart (same population-weighted means as body copy / scatter Y).
+	 * Default size is 1.5× 268×96 with scaled margins and type (see ``COHORT_MINI_BAR``).
 	 *
 	 * @param { { meanTod: number, meanNonTod: number, meanMinimal: number, kind: 'pp' | 'pct' | 'min' } | undefined } row
 	 * @param {{ w?: number, h?: number }} [opts]
 	 */
+	const COHORT_MINI_BAR = { W: 402, H: 288, fs: 14, tickPad: 8, bottomLabelyPad: 20, valueLabelyPad: 6, rx: 1.5 };
+
 	function cohortMiniBarLayout(row, opts) {
 		if (!row) return null;
-		const W = opts?.w ?? 268;
-		const H = opts?.h ?? 96;
-		// Extra top margin so value labels (above bar tops) stay inside the viewBox
-		const m = { t: 16, r: 8, b: 20, l: 36 };
+		const W = opts?.w ?? COHORT_MINI_BAR.W;
+		const H = opts?.h ?? COHORT_MINI_BAR.H;
+		// Margins and typography scale with the 50% larger plot (1.5× base).
+		const m = { t: 24, r: 12, b: 30, l: 54 };
+		// TOD / non-TOD / minimal: same MBTA green & orange as scatter & map; grey matches minimal-class outline
 		const items = [
-			{ id: 'tod', shortLabel: 'TOD', v: row.meanTod, fill: '#0f766e' },
-			{ id: 'nontod', shortLabel: 'Non-TOD', v: row.meanNonTod, fill: '#64748b' },
-			{ id: 'minimal', shortLabel: 'Minimal', v: row.meanMinimal, fill: '#94a3b8' }
+			{ id: 'tod', shortLabel: 'TOD', v: row.meanTod, fill: MBTA_GREEN },
+			{ id: 'nontod', shortLabel: 'Non-TOD', v: row.meanNonTod, fill: MBTA_ORANGE },
+			{ id: 'minimal', shortLabel: 'Minimal', v: row.meanMinimal, fill: GREY_MINIMAL }
 		];
 		const finite = items.filter((d) => Number.isFinite(d.v));
 		if (finite.length === 0) return null;
@@ -358,7 +370,7 @@
 					wPx: x.bandwidth(),
 					hPx: 0,
 					valueLabel: '—',
-					labelY: y0px - 4
+					labelY: y0px - COHORT_MINI_BAR.valueLabelyPad
 				};
 			}
 			const yV = toSvgY(d.v);
@@ -366,7 +378,7 @@
 			const hPx = Math.abs(yV - y0px);
 			const valueLabel = formatYMetricSummary(d.v, row.kind);
 			// Alphabetic baseline: a few px above the top of the bar (smaller y = higher on screen)
-			const labelY = top - 4;
+			const labelY = top - COHORT_MINI_BAR.valueLabelyPad;
 			return { ...d, xPx: (x(d.id) ?? 0) + m.l, yPx: top, wPx: x.bandwidth(), hPx, valueLabel, labelY };
 		});
 		const yAxisTicks = yTicks.map((t) => ({
@@ -379,7 +391,22 @@
 						? `${tickFmt(t)}`
 						: `${tickFmt(t)}%`
 		}));
-		return { W, H, m, mInner: iw, ih, y0px, bars, yDomain, yAxisTicks, unitKind: row.kind };
+		return {
+			W,
+			H,
+			m,
+			mInner: iw,
+			ih,
+			y0px,
+			bars,
+			yDomain,
+			yAxisTicks,
+			unitKind: row.kind,
+			fontSize: COHORT_MINI_BAR.fs,
+			tickTextPad: COHORT_MINI_BAR.tickPad,
+			bottomLabelY: m.t + ih + COHORT_MINI_BAR.bottomLabelyPad,
+			barRectRx: COHORT_MINI_BAR.rx
+		};
 	}
 
 	const incomeMiniBar = $derived(cohortMiniBarLayout(incomeRow));
@@ -418,10 +445,16 @@
 	let incomePanelState = $state(makeTodScatterPanelState('median_income_change_pct'));
 	let eduPanelState = $state(makeTodScatterPanelState('bachelors_pct_change'));
 
+	/**
+	 * Keep transit distance in sync with the municipal slider (``threshold``) without
+	 * replacing the whole panel object. New objects force both ``TodIntensityScatter`` charts
+	 * to tear down and rebuild D3 on every run — including extra effect runs on load — which
+	 * dominated main-thread time; mutating ``transitDistanceMi`` is enough to refresh plots.
+	 */
 	$effect(() => {
-		void threshold;
-		incomePanelState = makeTodScatterPanelState('median_income_change_pct');
-		eduPanelState = makeTodScatterPanelState('bachelors_pct_change');
+		const t = threshold;
+		incomePanelState.transitDistanceMi = t;
+		eduPanelState.transitDistanceMi = t;
 	});
 </script>
 
@@ -807,12 +840,12 @@
 										stroke-width="1"
 									/>
 									<text
-										x={incomeMiniBar.m.l - 5}
+										x={incomeMiniBar.m.l - incomeMiniBar.tickTextPad}
 										y={tick.yPx}
 										text-anchor="end"
 										dominant-baseline="middle"
 										fill="var(--muted, #5e6573)"
-										font-size="9"
+										font-size={incomeMiniBar.fontSize}
 									>
 										{tick.label}
 									</text>
@@ -834,7 +867,7 @@
 										width={b.wPx}
 										height={b.hPx}
 										fill={b.fill}
-										rx="1"
+										rx={incomeMiniBar.barRectRx}
 									>
 										<title
 											>{b.shortLabel}: {formatYMetricSummary(b.v, incomeRow.kind)} (population-weighted mean)</title
@@ -844,7 +877,7 @@
 										x={b.xPx + b.wPx / 2}
 										y={b.labelY}
 										text-anchor="middle"
-										font-size="9"
+										font-size={incomeMiniBar.fontSize}
 										font-weight="600"
 										fill="var(--ink, #1f2430)"
 									>
@@ -852,10 +885,10 @@
 									</text>
 									<text
 										x={b.xPx + b.wPx / 2}
-										y={incomeMiniBar.m.t + incomeMiniBar.ih + 13}
+										y={incomeMiniBar.bottomLabelY}
 										text-anchor="middle"
 										fill="var(--ink, #1f2430)"
-										font-size="9"
+										font-size={incomeMiniBar.fontSize}
 									>
 										{b.shortLabel}
 									</text>
@@ -929,12 +962,12 @@
 										stroke-width="1"
 									/>
 									<text
-										x={eduMiniBar.m.l - 5}
+										x={eduMiniBar.m.l - eduMiniBar.tickTextPad}
 										y={tick.yPx}
 										text-anchor="end"
 										dominant-baseline="middle"
 										fill="var(--muted, #5e6573)"
-										font-size="9"
+										font-size={eduMiniBar.fontSize}
 									>
 										{tick.label}
 									</text>
@@ -956,7 +989,7 @@
 										width={b.wPx}
 										height={b.hPx}
 										fill={b.fill}
-										rx="1"
+										rx={eduMiniBar.barRectRx}
 									>
 										<title
 											>{b.shortLabel}: {formatYMetricSummary(b.v, eduRow.kind)} (population-weighted mean)</title
@@ -966,7 +999,7 @@
 										x={b.xPx + b.wPx / 2}
 										y={b.labelY}
 										text-anchor="middle"
-										font-size="9"
+										font-size={eduMiniBar.fontSize}
 										font-weight="600"
 										fill="var(--ink, #1f2430)"
 									>
@@ -974,25 +1007,23 @@
 									</text>
 									<text
 										x={b.xPx + b.wPx / 2}
-										y={eduMiniBar.m.t + eduMiniBar.ih + 13}
+										y={eduMiniBar.bottomLabelY}
 										text-anchor="middle"
 										fill="var(--ink, #1f2430)"
-										font-size="9"
+										font-size={eduMiniBar.fontSize}
 									>
 										{b.shortLabel}
 									</text>
 								{/each}
 							</svg>
 							<figcaption class="cohort-mini-bar__cap">
-								Population-weighted tract means (same cohorts as the scatter); axis shows bachelor’s share
-								change ({eduRow.kind === 'pp' ? 'percentage points' : 'other units'}).
+								Summary: average change in median income (%) for each tract category, weighted by population.
 							</figcaption>
 						</figure>
 					{:else}
 						<figure class="cohort-mini-bar cohort-mini-bar--empty">
 							<p class="cohort-mini-bar__cap">
-								Bar chart of population-weighted means will appear when tract data includes enough
-								non-missing values for this metric.
+								Summary: average change in bachelor's degree share (pp) for each tract category, weighted by population.
 							</p>
 						</figure>
 					{/if}
@@ -1788,7 +1819,7 @@
 	/* Compact cohort means bar: mirrors population-weighted values in the paragraph and scatter */
 	.cohort-mini-bar {
 		margin: 12px 0 0;
-		max-width: 280px;
+		max-width: 420px;
 	}
 
 	.cohort-mini-bar svg {

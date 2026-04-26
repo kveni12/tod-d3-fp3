@@ -1,5 +1,7 @@
 <script>
 	import { base } from '$app/paths';
+	import { browser } from '$app/environment';
+	import { onMount } from 'svelte';
 	import FilterPanel from '$lib/components/FilterPanel.svelte';
 	import PocNhgisTractMap from '$lib/components/PocNhgisTractMap.svelte';
 	import TractDetail from '$lib/components/TractDetail.svelte';
@@ -7,6 +9,24 @@
 	import { tractData, developments } from '$lib/stores/data.svelte.js';
 	import { buildFilteredData } from '$lib/utils/derived.js';
 	import { buildNhgisLikeRows, buildTractDevClassMap } from '$lib/utils/mainPocTractModel.js';
+
+	/**
+	 * Defer the TOD scatter chunk + cohort ``buildTodAnalysisData`` work until after the first
+	 * frames, so the main thread is not contending with ``loadAllData`` JSON apply + first map draw.
+	 */
+	let loadTodSection = $state(false);
+	onMount(() => {
+		let raf2 = 0;
+		const raf1 = requestAnimationFrame(() => {
+			raf2 = requestAnimationFrame(() => {
+				loadTodSection = true;
+			});
+		});
+		return () => {
+			cancelAnimationFrame(raf1);
+			if (raf2) cancelAnimationFrame(raf2);
+		};
+	});
 
 	const playgroundPanel = createPanelState('playground');
 	playgroundPanel.xVar = 'pct_stock_increase';
@@ -111,6 +131,18 @@
 			</div>
 		</div>
 	</div>
+
+	<!-- Client-only + deferred: scatters + cohort re-run the heavy TOD path; do not start on first paint. -->
+	{#if browser && loadTodSection}
+		{#await import('$lib/components/PlaygroundTodScatters.svelte')}
+			<p class="playground-tod-loading card" aria-live="polite">Loading TOD analysis charts…</p>
+		{:then mod}
+			{@const PlaygroundTodScatters = mod.default}
+			<PlaygroundTodScatters panelState={playgroundPanel} />
+		{:catch}
+			<p class="playground-tod-fail card">TOD analysis charts could not be loaded. Try refreshing the page.</p>
+		{/await}
+	{/if}
 </section>
 
 <style>
@@ -261,5 +293,21 @@
 		.playground-map-wrap {
 			min-height: 620px;
 		}
+	}
+
+	.playground-tod-loading,
+	.playground-tod-fail {
+		margin-top: 12px;
+		padding: 16px 18px;
+		font-size: 0.92rem;
+		color: #4b5563;
+	}
+
+	/* D3-injected tooltips: match warm card + readable text (same idea as the guided story) */
+	:global(.playground-root .tod-intensity-wrap .scatter-tooltip),
+	:global(.playground-root .tod-aff-wrap .scatter-tooltip) {
+		color: #1f2430;
+		border-color: #d8d2c7;
+		box-shadow: 0 14px 34px rgba(31, 36, 48, 0.08);
 	}
 </style>

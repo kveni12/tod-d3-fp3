@@ -24,7 +24,12 @@
 		domainOverride = null,
 		wideLayout = false,
 		/** When false, hide the axis-trim checkbox and plot full data extent (POC income/education embeds). */
-		showTrimControl = true
+		showTrimControl = true,
+		/**
+		 * If set, use this Y metric key instead of ``panelState.yVar`` (map/sidebar can keep a
+		 * different choropleth Y). Selection and other filters still come from ``panelState``.
+		 */
+		yVarOverride = null
 	} = $props();
 
 	let containerEl = $state(null);
@@ -60,7 +65,7 @@
 	const plotKey = $derived(
 		JSON.stringify({
 			tp: panelState.timePeriod,
-			y: panelState.yVar,
+			y: yVarOverride ?? panelState.yVar,
 			n: tractData.length,
 			dn: developments.length,
 			tdMi: panelState.transitDistanceMi,
@@ -107,7 +112,7 @@
 		lastPlotKey = plotKey;
 
 		const tp = panelState.timePeriod;
-		const yBase = panelState.yVar;
+		const yBase = yVarOverride ?? panelState.yVar;
 		const yKey = `${yBase}_${tp}`;
 		const huKey = huWeightKey(tp);
 		const hoveredId = panelState.hoveredTract;

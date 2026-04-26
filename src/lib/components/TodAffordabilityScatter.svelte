@@ -19,7 +19,15 @@
 		MBTA_RED
 	} from '$lib/utils/mbtaColors.js';
 
-	let { panelState, domainOverride = null } = $props();
+	let {
+		panelState,
+		domainOverride = null,
+		/**
+		 * If set, use this Y metric key instead of ``panelState.yVar`` (e.g. playground shows a
+		 * single affordability plot while the choropleth uses another Y from the same panel).
+		 */
+		yVarOverride = null
+	} = $props();
 
 	let containerEl = $state(null);
 	let tooltip = $state({ visible: false, x: 0, y: 0, lines: [] });
@@ -35,7 +43,7 @@
 	const plotKey = $derived(
 		JSON.stringify({
 			tp: panelState.timePeriod,
-			y: panelState.yVar,
+			y: yVarOverride ?? panelState.yVar,
 			n: tractData.length,
 			dn: developments.length,
 			tdMi: panelState.transitDistanceMi,
@@ -72,7 +80,7 @@
 		lastPlotKey = plotKey;
 
 		const tp = panelState.timePeriod;
-		const yBase = panelState.yVar;
+		const yBase = yVarOverride ?? panelState.yVar;
 		const yKey = `${yBase}_${tp}`;
 		const huKey = huWeightKey(tp);
 
